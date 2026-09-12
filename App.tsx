@@ -1,20 +1,12 @@
-import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, Text, View } from 'react-native';
+// App.tsx — adicionar FormSelect e Captura com parâmetro
 
-export default function App() {
-  return (
-    <View style={styles.container}>
-      <Text>Open up App.tsx to start working on your app!</Text>
-      <StatusBar style="auto" />
-    </View>
-  );
-}
+export type RootStackParamList = {
+  Principal: { screen?: string } | undefined;
+  FormSelect: undefined;                             // NOVO
+  Captura: { formTemplateId: string };               // ALTERADO: agora recebe o template
+  Revisao: { reportId: string; extractionFailed: boolean };
+};
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
+// Adicionar no Stack.Navigator:
+// <Stack.Screen name="FormSelect" component={FormSelectScreen} options={{ title: 'Novo Relatório' }} />
+// <Stack.Screen name="Captura" component={CapturaScreen} options={{ title: 'Captura' }} />
