@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, FlatList } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
-import { loadReports, upsertReport } from '../storage/reports';
+import { useNavigation, NavigationProp } from '@react-navigation/native';
+import { loadReports, saveReports, upsertReport } from '../storage/reports';
 import { Report } from '../types';
 import { styles } from '../styles';
+import { RootStackParamList } from '../../App';
 
 export default function HistoricoScreen() {
-  const navigation = useNavigation();
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -25,7 +26,7 @@ export default function HistoricoScreen() {
   }
 
   function handleOpenReport(report: Report) {
-    navigation.navigate('Revisão', { reportId: report.id } as never);
+    navigation.navigate('Revisao', { reportId: report.id });
   }
 
   async function handleSyncReport(report: Report) {
@@ -37,7 +38,7 @@ export default function HistoricoScreen() {
   async function handleDeleteReport(report: Report) {
     const reports = await loadReports();
     const filtered = reports.filter((item) => item.id !== report.id);
-    await upsertReport(filtered);
+    await saveReports(filtered);
     refreshList();
   }
 
@@ -56,7 +57,7 @@ export default function HistoricoScreen() {
         <Text style={styles.emptyText}>Crie seu primeiro relatório na aba Captura.</Text>
         <TouchableOpacity
           style={[styles.button, styles.buttonPrimary]}
-          onPress={() => navigation.navigate('Captura' as never)}
+          onPress={() => navigation.navigate('FormSelect')}
           activeOpacity={0.8}
         >
           <Text style={styles.buttonText}>+ Novo relatório</Text>

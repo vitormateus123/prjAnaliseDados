@@ -30,7 +30,7 @@ export default function CapturaScreen() {
         syncAttempted: false,
       };
       await upsertReport(report);
-      navigation.navigate('Revisão', { reportId: report.id });
+      navigation.navigate('Revisao', { reportId: report.id });
     } catch (err) {
       setError('Falha ao processar gravação. Tente novamente.');
     } finally {
@@ -55,7 +55,7 @@ export default function CapturaScreen() {
         syncAttempted: false,
       };
       await upsertReport(report);
-      navigation.navigate('Revisão', { reportId: report.id });
+      navigation.navigate('Revisao', { reportId: report.id });
     } catch (err) {
       setError('Falha ao processar foto. Tente novamente.');
     } finally {

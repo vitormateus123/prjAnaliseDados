@@ -1,8 +1,8 @@
-// src/types/index.ts
-// Re-exporta os tipos novos mantendo compatibilidade com imports existentes
+import { registerRootComponent } from 'expo';
 
-export * from './src/types/forms';
-export * from './src/types/reports';
+import App from './App';
 
-// Aliases de compatibilidade (remover quando todas as telas forem migradas)
-export type ReportOrigin = 'voz' | 'foto';
+// registerRootComponent calls AppRegistry.registerComponent('main', () => App);
+// It also ensures that whether you load the app in Expo Go or in a native build,
+// the environment is set up appropriately
+registerRootComponent(App);
