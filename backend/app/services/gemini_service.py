@@ -31,6 +31,25 @@ def _build_fields_spec(fields: list[FieldHint]) -> str:
         lines.append(f"- {f.key} ({f.type}): {hint}")
     return "\n".join(lines)
 
+_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "fields": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "key": {"type": "STRING"},
+                    "value": {"type": "STRING"},
+                    "confidence": {"type": "NUMBER"},
+                },
+                "required": ["key", "value", "confidence"],
+            }
+        }
+    },
+    "required": ["fields"],
+}
+
 async def extract_from_media(
     fields: list[FieldHint],
     media_bytes: bytes,
@@ -51,26 +70,34 @@ async def extract_from_media(
         content_parts,
         generation_config=genai.GenerationConfig(
             response_mime_type="application/json",
-            response_schema={
-                "type": "OBJECT",
-                "properties": {
-                    "fields": {
-                        "type": "ARRAY",
-                        "items": {
-                            "type": "OBJECT",
-                            "properties": {
-                                "key": {"type": "STRING"},
-                                "value": {"type": "STRING"},
-                                "confidence": {"type": "NUMBER"},
-                            },
-                            "required": ["key", "value", "confidence"],
-                        }
-                    }
-                },
-                "required": ["fields"],
-            },
+            response_schema=_RESPONSE_SCHEMA,
         ),
     )
     
+    data = json.loads(response.text)
+    return [ExtractedField(**f) for f in data["fields"]]
+
+async def extract_from_text(
+    fields: list[FieldHint],
+    text: str,
+) -> list[ExtractedField]:
+    """Usado no fluxo de voz: recebe a transcrição (Groq/Whisper) como texto
+    puro e pede ao Gemini para extrair os campos estruturados a partir dela."""
+    model = genai.GenerativeModel("gemini-2.5-flash")
+
+    fields_spec = _build_fields_spec(fields)
+    prompt = (
+        PROMPT_TEMPLATE.format(fields_spec=fields_spec)
+        + f"\n\nTEXTO TRANSCRITO (fala do usuário):\n{text}"
+    )
+
+    response = model.generate_content(
+        prompt,
+        generation_config=genai.GenerationConfig(
+            response_mime_type="application/json",
+            response_schema=_RESPONSE_SCHEMA,
+        ),
+    )
+
     data = json.loads(response.text)
     return [ExtractedField(**f) for f in data["fields"]]

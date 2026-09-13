@@ -1,35 +1,56 @@
-import { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity } from 'react-native';
-import { loadReports, ReportField, upsertReport as persistReport } from '../storage/reports';
+import { useCallback, useEffect, useState } from 'react';
+import { View, Text, TouchableOpacity, Alert } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
+import { useFocusEffect } from '@react-navigation/native';
+import { StorageService } from '../storage/StorageService';
+import { syncPendingReports } from '../services/sync/SyncService';
 import { styles } from '../styles';
-import { ReportOrigin } from '../types';
 
 export default function AjustesScreen() {
-  const [isOnline, setIsOnline] = useState(true);
+  const [isOnline, setIsOnline] = useState<boolean | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const [syncing, setSyncing] = useState(false);
 
-  useEffect(() => {
-    async function loadPending() {
-      const reports = await loadReports();
-      const count = reports.filter((item) => item.status === 'pendente').length;
-      setPendingCount(count);
-    }
-    loadPending();
+  const refreshPending = useCallback(async () => {
+    const pending = await StorageService.getPendingReports();
+    setPendingCount(pending.length);
   }, []);
+
+  useEffect(() => {
+    // Estado inicial de conectividade
+    NetInfo.fetch().then((state) => setIsOnline(!!state.isConnected));
+
+    // Passa a refletir mudanças reais de rede (wifi ligando/desligando etc.)
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      setIsOnline(!!state.isConnected);
+    });
+    return unsubscribe;
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshPending();
+    }, [refreshPending]),
+  );
 
   async function handleSync() {
     setSyncing(true);
-    await new Promise((resolve) => setTimeout(resolve, 2000));
-    const reports = await loadReports();
-    const updated = reports.map((item) => ({
-      ...item,
-      status: 'sincronizado' as const,
-      syncAttempted: true,
-    }));
-    await Promise.all(updated.map((item) => upsertReport(item)));
-    setSyncing(false);
-    setPendingCount(0);
+    try {
+      const result = await syncPendingReports();
+      await refreshPending();
+      if (result.failed > 0) {
+        Alert.alert(
+          'Sincronização parcial',
+          `${result.success} relatório(s) sincronizado(s), ${result.failed} falharam.`,
+        );
+      } else if (result.success > 0) {
+        Alert.alert('Sincronizado', `${result.success} relatório(s) sincronizado(s) com sucesso.`);
+      } else {
+        Alert.alert('Sem conexão', 'Não foi possível sincronizar. Verifique sua internet.');
+      }
+    } finally {
+      setSyncing(false);
+    }
   }
 
   return (
@@ -42,7 +63,9 @@ export default function AjustesScreen() {
         <Text style={styles.sectionTitle}>Status de conexão</Text>
         <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 8 }}>
           <View style={[styles.onlineDot, isOnline ? styles.onlineDotOn : styles.onlineDotOff]} />
-          <Text style={{ fontSize: 16, color: '#0f172a' }}>{isOnline ? 'Online' : 'Offline'}</Text>
+          <Text style={{ fontSize: 16, color: '#0f172a' }}>
+            {isOnline === null ? 'Verificando...' : isOnline ? 'Online' : 'Offline'}
+          </Text>
         </View>
       </View>
 
@@ -54,7 +77,7 @@ export default function AjustesScreen() {
       <TouchableOpacity
         style={[styles.button, styles.buttonPrimary]}
         onPress={handleSync}
-        disabled={syncing || pendingCount === 0}
+        disabled={syncing || pendingCount === 0 || !isOnline}
         activeOpacity={0.8}
       >
         <Text style={styles.buttonText}>
@@ -63,16 +86,4 @@ export default function AjustesScreen() {
       </TouchableOpacity>
     </View>
   );
-}
-
-async function upsertReport(item: {
-  status: 'sincronizado';
-  syncAttempted: boolean;
-  id: string;
-  createdAt: Date;
-  origin: ReportOrigin;
-  fields: ReportField[];
-  isDraft: boolean;
-}) {
-  return persistReport(item);
 }

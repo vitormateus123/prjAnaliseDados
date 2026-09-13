@@ -1,17 +1,17 @@
-import { Text, View } from 'react-native';
-import { ReportField } from '../types';
+import { Text, TextInput, View } from 'react-native';
+import { ReportField } from '../types/reports';
+import { fieldValueToString } from '../utils/fieldValue';
 import { styles } from '../styles';
+import { ConfidenceBadge } from './ConfidenceBadge';
 
 interface DynamicFieldsProps {
   fields: ReportField[];
-  values: Record<string, string>;
-  onChange: (key: string, value: string) => void;
+  onChange: (key: string, rawValue: string) => void;
   showEmptyMessage?: boolean;
 }
 
 export function DynamicFields({
   fields,
-  values,
   onChange,
   showEmptyMessage = false,
 }: DynamicFieldsProps) {
@@ -29,19 +29,25 @@ export function DynamicFields({
       )}
 
       {fields.map((field) => {
-        const isReadOnly = field.key === 'origem';
-        const isNumeric = field.type === 'quantidade';
+        const isFromAI = field.source === 'ai' || field.source === 'ai_edited';
+        const isMultiline = field.field_value.type === 'long_text';
 
         return (
           <View key={field.key} style={styles.field}>
-            <Text style={styles.label}>
-              {field.label}
-            </Text>
-            <View style={[styles.input, isReadOnly && { backgroundColor: '#e2e8f0' }]}>
-              <Text style={{ fontSize: 16, color: '#0f172a' }}>
-                {values[field.key] ?? ''}
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8 }}>
+              <Text style={[styles.label, { marginBottom: 0, marginRight: 8 }]}>
+                {field.label}
               </Text>
+              {isFromAI && <ConfidenceBadge confidence={field.confidence} />}
             </View>
+            <TextInput
+              style={[styles.input, isMultiline && { minHeight: 96, textAlignVertical: 'top' }]}
+              value={fieldValueToString(field.field_value)}
+              onChangeText={(text) => onChange(field.key, text)}
+              multiline={isMultiline}
+              placeholder={field.label}
+              placeholderTextColor="#94a3b8"
+            />
           </View>
         );
       })}

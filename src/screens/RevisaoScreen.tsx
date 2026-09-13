@@ -1,5 +1,5 @@
 // src/screens/RevisaoScreen.tsx
-// REESCRITO: substitui RevisaoScreen.js que tinha import de store inexistente
+// Migrada para os tipos novos (src/types/reports.ts) e para o StorageService.
 
 import React, { useState, useEffect } from 'react';
 import {
@@ -9,9 +9,10 @@ import {
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../App';
-import { loadReports, saveReports } from '../storage/reports';
-import { Report } from '../types';
+import { StorageService } from '../storage/StorageService';
+import { Report } from '../types/reports';
 import { DynamicFields } from '../components/DynamicFields';
+import { parseFieldValue } from '../utils/fieldValue';
 
 function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
   if (!visible) return null;
@@ -33,29 +34,32 @@ export function RevisaoScreen() {
   const { reportId, extractionFailed } = route.params;
 
   const [report, setReport] = useState<Report | null>(null);
+  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    loadReports().then((all) => {
-      const found = all.find((r) => r.id === reportId) ?? null;
+    StorageService.getReportById(reportId).then((found) => {
       setReport(found);
+      setLoading(false);
     });
   }, [reportId]);
 
-  if (!report) return <LoadingOverlay visible message="Carregando..." />;
+  if (loading || !report) return <LoadingOverlay visible message="Carregando..." />;
 
-  // Extrai valores como Record<string, string> para o DynamicFieldForm
-  const values: Record<string, string> = {};
-  report.fields.forEach((f) => { values[f.key] = f.value; });
-
-  function handleChange(key: string, value: string) {
+  function handleChange(key: string, rawValue: string) {
     setReport((prev) => {
       if (!prev) return prev;
       return {
         ...prev,
-        fields: prev.fields.map((f) =>
-          f.key === key ? { ...f, value } : f
-        ),
+        fields: prev.fields.map((f) => {
+          if (f.key !== key) return f;
+          return {
+            ...f,
+            field_value: parseFieldValue(f.field_value.type, rawValue),
+            was_edited: true,
+            source: f.source === 'manual' ? 'manual' : 'ai_edited',
+          };
+        }),
       };
     });
   }
@@ -64,12 +68,12 @@ export function RevisaoScreen() {
     if (!report) return;
     setSaving(true);
     try {
-      const reports = await loadReports();
-      await saveReports(
-        reports.map((item) =>
-          item.id === report.id ? { ...report, status: 'pendente' } : item
-        )
-      );
+      const updated: Report = {
+        ...report,
+        status: report.status === 'synced' ? 'synced' : 'pending_sync',
+        updated_at: new Date().toISOString(),
+      };
+      await StorageService.upsertReport(updated);
       navigation.navigate('Principal', { screen: 'Histórico' });
     } catch {
       Alert.alert('Erro', 'Não foi possível salvar. Tente novamente.');
@@ -85,8 +89,8 @@ export function RevisaoScreen() {
         <Text style={styles.title}>Confira os dados extraídos</Text>
         <DynamicFields
           fields={report.fields}
-          values={values}
           onChange={handleChange}
+          showEmptyMessage={!!extractionFailed}
         />
         <TouchableOpacity style={styles.button} onPress={handleSave}>
           <Text style={styles.buttonText}>Salvar relatório</Text>

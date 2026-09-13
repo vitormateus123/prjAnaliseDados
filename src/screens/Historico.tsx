@@ -1,44 +1,68 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, FlatList } from 'react-native';
-import { useNavigation, NavigationProp } from '@react-navigation/native';
-import { loadReports, saveReports, upsertReport } from '../storage/reports';
-import { Report } from '../types';
+import { useNavigation, useFocusEffect, NavigationProp } from '@react-navigation/native';
+import { StorageService } from '../storage/StorageService';
+import { Report } from '../types/reports';
 import { styles } from '../styles';
 import { RootStackParamList } from '../../App';
+
+const STATUS_LABEL: Record<Report['status'], string> = {
+  draft: '📝 Rascunho',
+  pending_sync: '⏳ Pendente',
+  synced: '✓ Sincronizado',
+  error: '⚠️ Erro',
+};
+
+const STATUS_COLOR: Record<Report['status'], string> = {
+  draft: '#475569',
+  pending_sync: '#92400e',
+  synced: '#065f46',
+  error: '#991b1b',
+};
+
+function captureIcon(report: Report): string {
+  const type = report.captures[0]?.type;
+  if (type === 'voice') return '🎤';
+  if (type === 'photo') return '📷';
+  return '✍️';
+}
 
 export default function HistoricoScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function load() {
-      const data = await loadReports();
-      setReports(data.reverse());
-      setLoading(false);
-    }
-    load();
+  const refreshList = useCallback(async () => {
+    const data = await StorageService.getAllReports();
+    setReports([...data].reverse());
   }, []);
 
-  async function refreshList() {
-    const data = await loadReports();
-    setReports(data.reverse());
-  }
+  useEffect(() => {
+    refreshList().finally(() => setLoading(false));
+  }, [refreshList]);
+
+  // Recarrega sempre que a aba volta a ficar em foco (ex: após salvar na Revisão)
+  useFocusEffect(
+    useCallback(() => {
+      refreshList();
+    }, [refreshList]),
+  );
 
   function handleOpenReport(report: Report) {
     navigation.navigate('Revisao', { reportId: report.id });
   }
 
   async function handleSyncReport(report: Report) {
-    const updated = { ...report, status: 'sincronizado' as const, syncAttempted: true };
-    await upsertReport(updated);
+    await StorageService.upsertReport({
+      ...report,
+      status: 'synced',
+      synced_at: new Date().toISOString(),
+    });
     refreshList();
   }
 
   async function handleDeleteReport(report: Report) {
-    const reports = await loadReports();
-    const filtered = reports.filter((item) => item.id !== report.id);
-    await saveReports(filtered);
+    await StorageService.deleteReport(report.id);
     refreshList();
   }
 
@@ -72,7 +96,6 @@ export default function HistoricoScreen() {
         data={reports}
         keyExtractor={(item) => item.id}
         contentContainerStyle={{ paddingBottom: 32 }}
-        refreshControl={undefined}
         onRefresh={refreshList}
         refreshing={loading}
         renderItem={({ item }) => (
@@ -84,22 +107,16 @@ export default function HistoricoScreen() {
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
               <View style={{ flex: 1 }}>
                 <Text style={{ fontSize: 16, fontWeight: '600', color: '#0f172a' }}>
-                  Relatório {item.id.slice(0, 8)}
+                  {item.form_template_name}
                 </Text>
                 <Text style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
-                  {item.origin === 'voz' ? '🎤 Voz' : '📷 Foto'} —{' '}
-                  {item.createdAt.toLocaleDateString('pt-BR')}
+                  {captureIcon(item)} —{' '}
+                  {new Date(item.created_at).toLocaleDateString('pt-BR')}
                 </Text>
               </View>
               <View style={{ alignItems: 'flex-end' }}>
-                <Text
-                  style={{
-                    fontSize: 12,
-                    fontWeight: '600',
-                    color: item.status === 'sincronizado' ? '#065f46' : '#92400e',
-                  }}
-                >
-                  {item.status === 'sincronizado' ? '✓ Sincronizado' : '⏳ Pendente'}
+                <Text style={{ fontSize: 12, fontWeight: '600', color: STATUS_COLOR[item.status] }}>
+                  {STATUS_LABEL[item.status]}
                 </Text>
               </View>
             </View>
