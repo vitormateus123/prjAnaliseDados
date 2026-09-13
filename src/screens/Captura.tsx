@@ -6,7 +6,7 @@ import NetInfo from '@react-native-community/netinfo';
 import { v4 as uuidv4 } from 'uuid';
 import { RootStackParamList } from '../../App';
 import { extractFields } from '../services/api/ai/ExtractionService';
-import { startRecording, stopRecording } from '../services/api/speech/AudioRecordingService';
+import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
 import { MOCK_FORM_TEMPLATES } from '../mock/formTemplates';
 import { FormTemplate } from '../types/forms';
@@ -48,9 +48,9 @@ export default function CapturaScreen() {
   const { formTemplateId } = route.params;
 
   const [template, setTemplate] = useState<FormTemplate | null>(null);
-  const [isRecordingActive, setIsRecordingActive] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const audio = useAudioCapture();
 
   useEffect(() => {
     const found = MOCK_FORM_TEMPLATES.find((t) => t.id === formTemplateId) ?? null;
@@ -120,9 +120,8 @@ export default function CapturaScreen() {
   }
 
   async function handleToggleRecording() {
-    if (isRecordingActive) {
-      setIsRecordingActive(false);
-      const uri = await stopRecording();
+    if (audio.isRecording) {
+      const uri = await audio.stopRecording();
       if (uri) {
         await processCapture(uri, 'voice', 'audio/m4a');
       }
@@ -130,8 +129,7 @@ export default function CapturaScreen() {
     }
 
     try {
-      await startRecording();
-      setIsRecordingActive(true);
+      await audio.startRecording();
     } catch {
       setError('Não foi possível acessar o microfone.');
     }
@@ -185,7 +183,7 @@ export default function CapturaScreen() {
         <Text style={styles.buttonText}>
           {isProcessing
             ? 'Processando...'
-            : isRecordingActive
+            : audio.isRecording
             ? '⏹ Parar gravação'
             : '🎤 Gravar por voz'}
         </Text>
@@ -194,7 +192,7 @@ export default function CapturaScreen() {
       <TouchableOpacity
         style={[styles.button, styles.buttonPrimary]}
         onPress={handlePhotoCapture}
-        disabled={isProcessing || isRecordingActive}
+        disabled={isProcessing || audio.isRecording}
         activeOpacity={0.8}
       >
         <Text style={styles.buttonText}>

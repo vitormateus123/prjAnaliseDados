@@ -1,31 +1,44 @@
 // src/services/speech/AudioRecordingService.ts
-import { Audio } from 'expo-av';
+// expo-av foi removido do Expo Go a partir da SDK 55 (deprecado desde a SDK 54)
+// — o substituto oficial, expo-audio, só expõe a gravação via hook do React
+// (useAudioRecorder), então esta abstração agora é um hook em vez de funções
+// soltas. A interface pública (start/stop) continua simples de usar.
+import { useEffect } from 'react';
+import {
+  AudioModule,
+  RecordingPresets,
+  setAudioModeAsync,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from 'expo-audio';
 
-let _recording: Audio.Recording | null = null;
+export function useAudioCapture() {
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(recorder);
 
-export async function startRecording(): Promise<void> {
-  await Audio.requestPermissionsAsync();
-  await Audio.setAudioModeAsync({
-    allowsRecordingIOS: true,
-    playsInSilentModeIOS: true,
-  });
-  
-  const { recording } = await Audio.Recording.createAsync(
-    Audio.RecordingOptionsPresets.HIGH_QUALITY,
-  );
-  _recording = recording;
-}
+  useEffect(() => {
+    (async () => {
+      const status = await AudioModule.requestRecordingPermissionsAsync();
+      if (!status.granted) {
+        console.warn('Permissão de microfone negada.');
+      }
+      await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
+    })();
+  }, []);
 
-export async function stopRecording(): Promise<string | null> {
-  if (!_recording) return null;
-  await _recording.stopAndUnloadAsync();
-  const uri = _recording.getURI();
-  _recording = null;
-  
-  await Audio.setAudioModeAsync({ allowsRecordingIOS: false });
-  return uri ?? null;
-}
+  async function startRecording(): Promise<void> {
+    await recorder.prepareToRecordAsync();
+    recorder.record();
+  }
 
-export function isRecording(): boolean {
-  return _recording !== null;
+  async function stopRecording(): Promise<string | null> {
+    await recorder.stop();
+    return recorder.uri ?? null;
+  }
+
+  return {
+    isRecording: recorderState.isRecording,
+    startRecording,
+    stopRecording,
+  };
 }
