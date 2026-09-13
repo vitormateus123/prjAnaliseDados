@@ -1,24 +1,72 @@
 # backend/app/api/routes/templates.py
-# Stub inicial — hoje o app carrega os formulários de src/mock/formTemplates.ts
-# (offline-first). Este endpoint existe para permitir a migração futura dos
-# templates para o Supabase (tabela form_templates) sem alterar o contrato
-# da API consumida pelo app.
 from fastapi import APIRouter, HTTPException
+from app.services.supabase_service import get_client
+from app.schemas.forms import FormTemplateOut, FormFieldOut
 
 router = APIRouter()
 
-# TODO (fase futura): substituir por consulta ao Supabase (form_templates + form_fields)
-_TEMPLATES: list[dict] = []
+
+def _load_fields(template_id: str) -> list[FormFieldOut]:
+    supabase = get_client()
+    fields_resp = (
+        supabase.table("form_fields")
+        .select("*")
+        .eq("form_template_id", template_id)
+        .order("position")
+        .execute()
+    )
+    return [FormFieldOut(**f) for f in (fields_resp.data or [])]
 
 
-@router.get("/")
+@router.get("/", response_model=list[FormTemplateOut])
 def list_templates():
-    return {"templates": _TEMPLATES}
+    """Lista os formulários ativos, cada um já com seus campos ordenados por 'position'.
+    É isso que a FormSelectScreen do app consome no lugar do MOCK_FORM_TEMPLATES."""
+    supabase = get_client()
+
+    templates_resp = (
+        supabase.table("form_templates")
+        .select("*")
+        .eq("active", True)
+        .execute()
+    )
+    templates = templates_resp.data or []
+
+    return [
+        FormTemplateOut(
+            id=template["id"],
+            name=template["name"],
+            description=template.get("description"),
+            version=template["version"],
+            active=template["active"],
+            fields=_load_fields(template["id"]),
+        )
+        for template in templates
+    ]
 
 
-@router.get("/{template_id}")
+@router.get("/{template_id}", response_model=FormTemplateOut)
 def get_template(template_id: str):
-    for template in _TEMPLATES:
-        if template.get("id") == template_id:
-            return template
-    raise HTTPException(status_code=404, detail="Formulário não encontrado")
+    """Um formulário específico — é isso que a CapturaScreen chama a partir
+    do formTemplateId recebido por navegação."""
+    supabase = get_client()
+
+    resp = (
+        supabase.table("form_templates")
+        .select("*")
+        .eq("id", template_id)
+        .execute()
+    )
+    rows = resp.data or []
+    if not rows:
+        raise HTTPException(status_code=404, detail="Formulário não encontrado.")
+
+    template = rows[0]
+    return FormTemplateOut(
+        id=template["id"],
+        name=template["name"],
+        description=template.get("description"),
+        version=template["version"],
+        active=template["active"],
+        fields=_load_fields(template_id),
+    )

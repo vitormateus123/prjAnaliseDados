@@ -19,7 +19,14 @@ export async function apiFetch<T>(
   
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`API error ${response.status}: ${text}`);
+    let message = text;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed?.detail) message = parsed.detail;
+    } catch {
+      // corpo não é JSON — usa o texto cru mesmo
+    }
+    throw new Error(message);
   }
   
   return response.json() as Promise<T>;
@@ -34,7 +41,14 @@ export async function apiUpload<T>(
   
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(`Upload error ${response.status}: ${text}`);
+    let message = text;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed?.detail) message = parsed.detail;
+    } catch {
+      // corpo não é JSON — usa o texto cru mesmo
+    }
+    throw new Error(message);
   }
   
   return response.json() as Promise<T>;

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import { useNavigation, useRoute, NavigationProp, RouteProp } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import NetInfo from '@react-native-community/netinfo';
@@ -8,7 +8,7 @@ import { RootStackParamList } from '../../App';
 import { extractFields } from '../services/api/ai/ExtractionService';
 import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
-import { MOCK_FORM_TEMPLATES } from '../mock/formTemplates';
+import { fetchFormTemplateById } from '../services/api/forms/TemplatesService';
 import { FormTemplate } from '../types/forms';
 import { Capture, ExtractionResult, Report, ReportField } from '../types/reports';
 import { emptyFieldValue, parseFieldValue } from '../utils/fieldValue';
@@ -48,13 +48,23 @@ export default function CapturaScreen() {
   const { formTemplateId } = route.params;
 
   const [template, setTemplate] = useState<FormTemplate | null>(null);
+  const [loadingTemplate, setLoadingTemplate] = useState(true);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const audio = useAudioCapture();
 
   useEffect(() => {
-    const found = MOCK_FORM_TEMPLATES.find((t) => t.id === formTemplateId) ?? null;
-    setTemplate(found);
+    let active = true;
+    setLoadingTemplate(true);
+    fetchFormTemplateById(formTemplateId).then((found) => {
+      if (active) {
+        setTemplate(found);
+        setLoadingTemplate(false);
+      }
+    });
+    return () => {
+      active = false;
+    };
   }, [formTemplateId]);
 
   async function persistAndReview(
@@ -155,6 +165,15 @@ export default function CapturaScreen() {
 
     const asset = result.assets[0];
     await processCapture(asset.uri, 'photo', asset.mimeType ?? 'image/jpeg');
+  }
+
+  if (loadingTemplate) {
+    return (
+      <View style={styles.container}>
+        <ActivityIndicator size="large" color="#2563eb" />
+        <Text style={styles.loadingText}>Carregando formulário...</Text>
+      </View>
+    );
   }
 
   if (!template) {

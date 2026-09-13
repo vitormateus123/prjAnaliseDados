@@ -1,7 +1,9 @@
 # backend/app/core/config.py
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env")
+
     gemini_api_key: str
     groq_api_key: str
     supabase_url: str
@@ -16,8 +18,5 @@ class Settings(BaseSettings):
     @property
     def allowed_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
-
-    class Config:
-        env_file = ".env"
 
 settings = Settings()

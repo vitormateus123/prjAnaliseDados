@@ -56,4 +56,5 @@ export interface Report {
   created_at: string;
   updated_at: string;
   synced_at?: string;
+  sync_error?: string;         // mensagem da última tentativa de sync que falhou
 }

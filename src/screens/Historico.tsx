@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, FlatList } from 'react-native';
+import { View, Text, TouchableOpacity, FlatList, ActivityIndicator } from 'react-native';
 import { useNavigation, useFocusEffect, NavigationProp } from '@react-navigation/native';
 import { StorageService } from '../storage/StorageService';
+import { fetchRemoteReports } from '../services/api/reports/ReportsService';
+import { syncReport } from '../services/sync/SyncService';
 import { Report } from '../types/reports';
 import { styles } from '../styles';
 import { RootStackParamList } from '../../App';
@@ -31,14 +33,36 @@ export default function HistoricoScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
 
-  const refreshList = useCallback(async () => {
-    const data = await StorageService.getAllReports();
-    setReports([...data].reverse());
+  // Mescla o que está no Supabase com o que só existe localmente ainda
+  // (rascunhos e pendentes de sync). Um relatório remoto sempre é a
+  // versão mais confiável dele mesmo — só entra localmente se ainda não
+  // existir aqui (evita sobrescrever uma edição local em andamento).
+  const refreshList = useCallback(async (isRefresh = false) => {
+    isRefresh ? setRefreshing(true) : setLoading(true);
+
+    const local = await StorageService.getAllReports();
+    const localIds = new Set(local.map((r) => r.id));
+
+    try {
+      const remote = await fetchRemoteReports();
+      const onlyRemote = remote.filter((r) => !localIds.has(r.id));
+      for (const report of onlyRemote) {
+        await StorageService.upsertReport(report);
+      }
+    } catch {
+      // offline ou backend fora do ar — mostra só o que já está local
+    }
+
+    const merged = await StorageService.getAllReports();
+    setReports([...merged].reverse());
+    isRefresh ? setRefreshing(false) : setLoading(false);
   }, []);
 
   useEffect(() => {
-    refreshList().finally(() => setLoading(false));
+    refreshList();
   }, [refreshList]);
 
   // Recarrega sempre que a aba volta a ficar em foco (ex: após salvar na Revisão)
@@ -53,11 +77,9 @@ export default function HistoricoScreen() {
   }
 
   async function handleSyncReport(report: Report) {
-    await StorageService.upsertReport({
-      ...report,
-      status: 'synced',
-      synced_at: new Date().toISOString(),
-    });
+    setSyncingId(report.id);
+    await syncReport(report);
+    setSyncingId(null);
     refreshList();
   }
 
@@ -96,8 +118,8 @@ export default function HistoricoScreen() {
         data={reports}
         keyExtractor={(item) => item.id}
         contentContainerStyle={{ paddingBottom: 32 }}
-        onRefresh={refreshList}
-        refreshing={loading}
+        onRefresh={() => refreshList(true)}
+        refreshing={refreshing}
         renderItem={({ item }) => (
           <TouchableOpacity
             style={styles.card}
@@ -120,6 +142,11 @@ export default function HistoricoScreen() {
                 </Text>
               </View>
             </View>
+            {item.status === 'error' && item.sync_error && (
+              <Text style={{ fontSize: 12, color: '#991b1b', marginTop: 6 }} numberOfLines={3}>
+                {item.sync_error}
+              </Text>
+            )}
             <View style={{ flexDirection: 'row', marginTop: 12 }}>
               <TouchableOpacity
                 style={[styles.actionButton, styles.actionSecondary, { marginRight: 8 }]}
@@ -128,15 +155,22 @@ export default function HistoricoScreen() {
               >
                 <Text style={styles.actionTextSecondary}>Editar</Text>
               </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.actionButton, { backgroundColor: '#d1fae5', marginRight: 8 }]}
-                onPress={() => handleSyncReport(item)}
-                activeOpacity={0.8}
-              >
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#065f46' }}>
-                  Sincronizar
-                </Text>
-              </TouchableOpacity>
+              {item.status !== 'synced' && (
+                <TouchableOpacity
+                  style={[styles.actionButton, { backgroundColor: '#d1fae5', marginRight: 8 }]}
+                  onPress={() => handleSyncReport(item)}
+                  activeOpacity={0.8}
+                  disabled={syncingId === item.id}
+                >
+                  {syncingId === item.id ? (
+                    <ActivityIndicator size="small" color="#065f46" />
+                  ) : (
+                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#065f46' }}>
+                      Sincronizar
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
                 style={[styles.actionButton, { backgroundColor: '#fee2e2' }]}
                 onPress={() => handleDeleteReport(item)}
