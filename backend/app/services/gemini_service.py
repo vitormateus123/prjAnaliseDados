@@ -55,7 +55,7 @@ async def extract_from_media(
     media_bytes: bytes,
     mime_type: str,
 ) -> list[ExtractedField]:
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    model = genai.GenerativeModel("gemini-3.5-flash-lite")
     
     fields_spec = _build_fields_spec(fields)
     prompt = PROMPT_TEMPLATE.format(fields_spec=fields_spec)
@@ -83,7 +83,7 @@ async def extract_from_text(
 ) -> list[ExtractedField]:
     """Usado no fluxo de voz: recebe a transcrição (Groq/Whisper) como texto
     puro e pede ao Gemini para extrair os campos estruturados a partir dela."""
-    model = genai.GenerativeModel("gemini-2.5-flash")
+    model = genai.GenerativeModel("gemini-3.5-flash-lite")
 
     fields_spec = _build_fields_spec(fields)
     prompt = (

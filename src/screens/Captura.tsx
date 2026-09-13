@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, Alert } from 'react-native';
 import { useNavigation, useRoute, NavigationProp, RouteProp } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import NetInfo from '@react-native-community/netinfo';
-import { v4 as uuidv4 } from 'uuid';
+import * as Crypto from 'expo-crypto';
 import { RootStackParamList } from '../../App';
 import { extractFields } from '../services/api/ai/ExtractionService';
 import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
@@ -65,7 +65,7 @@ export default function CapturaScreen() {
   ) {
     const now = new Date().toISOString();
     const report: Report = {
-      id: uuidv4(),
+      id: Crypto.randomUUID(),
       form_template_id: activeTemplate.id,
       form_template_name: activeTemplate.name,
       status: 'draft',
@@ -90,7 +90,7 @@ export default function CapturaScreen() {
     setError(null);
 
     const capture: Capture = {
-      id: uuidv4(),
+      id: Crypto.randomUUID(),
       type: mediaType,
       local_path: mediaUri,
       mime_type: mimeType,
@@ -100,19 +100,23 @@ export default function CapturaScreen() {
     try {
       const netState = await NetInfo.fetch();
       if (!netState.isConnected) {
-        // Offline: IA não está disponível — segue para preenchimento manual
+        Alert.alert('Sem conexão', 'Você está offline — a extração por IA não está disponível. Preencha manualmente.');
         await persistAndReview(template, capture, null, true);
         return;
       }
 
       const result = await extractFields(mediaUri, mediaType, template.fields, mimeType);
+      if (!result.success) {
+        Alert.alert('Extração falhou', `Detalhe: ${result.error ?? 'motivo desconhecido'}`);
+      }
       await persistAndReview(template, capture, result, !result.success);
     } catch (err) {
-      setError(
+      const message =
         mediaType === 'voice'
           ? 'Falha ao processar gravação. Você pode preencher manualmente.'
-          : 'Falha ao processar foto. Você pode preencher manualmente.',
-      );
+          : 'Falha ao processar foto. Você pode preencher manualmente.';
+      setError(message);
+      Alert.alert('Extração falhou', `${message}\n\nDetalhe: ${err instanceof Error ? err.message : String(err)}`);
       await persistAndReview(template, capture, null, true);
     } finally {
       setIsProcessing(false);
@@ -143,7 +147,7 @@ export default function CapturaScreen() {
     }
 
     const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       quality: 0.7,
     });
 

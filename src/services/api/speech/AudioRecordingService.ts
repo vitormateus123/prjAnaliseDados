@@ -13,7 +13,7 @@ import {
 } from 'expo-audio';
 
 export function useAudioCapture() {
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorder = useAudioRecorder(RecordingPresets.LOW_QUALITY);
   const recorderState = useAudioRecorderState(recorder);
 
   useEffect(() => {

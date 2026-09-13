@@ -1,9 +1,17 @@
 // src/services/ai/ExtractionService.ts
 // Interface genérica — o app nunca depende de Gemini diretamente
+//
+// NOTA: não usamos fetch()+FormData aqui de propósito. A partir de certas
+// versões do Expo SDK, o FormData global embutido no runtime deixou de ser
+// compatível com o padrão clássico do React Native de anexar arquivo por URI
+// ({ uri, type, name }), e passou a lançar "Unsupported FormDataPart
+// implementation". FileSystem.uploadAsync faz upload multipart nativamente
+// e não depende do FormData do JS, então evita o problema por completo.
 
+import * as FileSystem from 'expo-file-system/legacy';
 import { FormField } from '../../../types/forms';
 import { ExtractionResult } from '../../../types/reports';
-import { apiUpload } from '../../api/apiClient';
+import { BASE_URL } from '../../api/apiClient';
 
 interface BackendExtractResponse {
   success: boolean;
@@ -26,18 +34,24 @@ export async function extractFields(
     type: f.type,
     extraction_hint: f.extraction_hint ?? null,
   }));
-  
-  const formData = new FormData();
-  formData.append('fields_json', JSON.stringify(fieldHints));
-  formData.append('media_type', mediaType);
-  formData.append('file', {
-    uri: mediaUri,
-    type: mimeType,
-    name: mediaType === 'voice' ? 'audio.m4a' : 'photo.jpg',
-  } as any);
-  
+
   try {
-    const result = await apiUpload<BackendExtractResponse>('/extract/', formData);
+    const uploadResult = await FileSystem.uploadAsync(`${BASE_URL}/extract/`, mediaUri, {
+      httpMethod: 'POST',
+      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+      fieldName: 'file',
+      mimeType,
+      parameters: {
+        fields_json: JSON.stringify(fieldHints),
+        media_type: mediaType,
+      },
+    });
+
+    if (uploadResult.status < 200 || uploadResult.status >= 300) {
+      throw new Error(`Upload error ${uploadResult.status}: ${uploadResult.body}`);
+    }
+
+    const result: BackendExtractResponse = JSON.parse(uploadResult.body);
     return {
       success: result.success,
       fields: result.fields,

@@ -1,9 +1,12 @@
 # backend/app/api/routes/extract.py
 import json
+import logging
+import time
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from app.schemas.extraction import ExtractResponse, FieldHint, ExtractedField
 from app.services import gemini_service, groq_service
 
+logger = logging.getLogger("extract")
 router = APIRouter()
 
 @router.post("/", response_model=ExtractResponse)
@@ -29,20 +32,29 @@ async def extract_fields(
         raise HTTPException(status_code=422, detail=f"fields_json inválido: {e}")
     
     try:
+        t0 = time.monotonic()
         if media_type == "voice":
             # STT primeiro, depois extração via texto
             transcript = await groq_service.transcribe_audio(content, file.content_type)
+            t1 = time.monotonic()
+            print(f"[extract] Groq (transcrição) levou {t1 - t0:.1f}s", flush=True)
             # Usa o texto transcrito como input para o Gemini (mais barato que multimodal)
             extracted_fields = await gemini_service.extract_from_text(fields, transcript)
-            model = "whisper-large-v3 + gemini-2.5-flash"
+            t2 = time.monotonic()
+            print(f"[extract] Gemini (extração) levou {t2 - t1:.1f}s", flush=True)
+            model = "whisper-large-v3 + gemini-3.5-flash-lite"
         else:
             # Foto direto para Gemini multimodal
             extracted_fields = await gemini_service.extract_from_media(fields, content, file.content_type)
-            model = "gemini-2.5-flash"
+            t1 = time.monotonic()
+            print(f"[extract] Gemini (extração multimodal) levou {t1 - t0:.1f}s", flush=True)
+            model = "gemini-3.5-flash-lite"
     except Exception as e:
+        print(f"[extract] FALHOU: {type(e).__name__}: {e}", flush=True)
+        logger.exception("Falha na extração (%s)", media_type)
         return ExtractResponse(
             success=False, fields=[], provider="gemini",
-            model="gemini-2.5-flash", error=str(e),
+            model="gemini-3.5-flash-lite", error=str(e),
         )
     
     return ExtractResponse(

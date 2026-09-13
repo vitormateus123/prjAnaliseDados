@@ -1,7 +1,7 @@
 // src/services/api/apiClient.ts
 import Constants from 'expo-constants';
 
-const BASE_URL = (Constants.expoConfig?.extra?.apiUrl as string)
+export const BASE_URL = (Constants.expoConfig?.extra?.apiUrl as string)
   ?? (globalThis as typeof globalThis & {
     process?: { env?: { EXPO_PUBLIC_API_URL?: string } };
   }).process?.env?.EXPO_PUBLIC_API_URL
