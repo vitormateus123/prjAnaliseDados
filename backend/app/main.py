@@ -8,7 +8,7 @@ app = FastAPI(title="Campo — Análise de Dados API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.allowed_origins,
+    allow_origins=settings.allowed_origins_list,
     allow_methods=["*"],
     allow_headers=["*"],
 )
