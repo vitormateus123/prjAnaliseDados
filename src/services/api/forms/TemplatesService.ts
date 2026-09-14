@@ -6,10 +6,21 @@
 // conexão, isso é tratado em Captura.tsx).
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { apiFetch } from '../apiClient';
+import { apiFetch, ApiError, NetworkError, BASE_URL } from '../apiClient';
 import { FormTemplate } from '../../../types/forms';
 
 const TEMPLATES_CACHE_KEY = 'campo_form_templates_cache_v1';
+
+/** Por que a lista não veio do servidor. `null` = veio normalmente. */
+export type TemplatesFailure =
+  | { kind: 'network'; message: string }
+  | { kind: 'server'; status: number; message: string };
+
+export interface TemplatesResult {
+  templates: FormTemplate[];
+  fromCache: boolean;
+  failure: TemplatesFailure | null;
+}
 
 async function cacheTemplates(templates: FormTemplate[]): Promise<void> {
   try {
@@ -20,29 +31,44 @@ async function cacheTemplates(templates: FormTemplate[]): Promise<void> {
 }
 
 async function getCachedTemplates(): Promise<FormTemplate[]> {
-  const raw = await AsyncStorage.getItem(TEMPLATES_CACHE_KEY);
-  return raw ? JSON.parse(raw) : [];
+  try {
+    const raw = await AsyncStorage.getItem(TEMPLATES_CACHE_KEY);
+    return raw ? (JSON.parse(raw) as FormTemplate[]) : [];
+  } catch {
+    return []; // cache corrompido não deve derrubar a tela
+  }
 }
 
-export async function fetchFormTemplates(): Promise<{
-  templates: FormTemplate[];
-  fromCache: boolean;
-}> {
+function toFailure(err: unknown): TemplatesFailure {
+  if (err instanceof ApiError) {
+    return { kind: 'server', status: err.status, message: err.message };
+  }
+  if (err instanceof NetworkError) {
+    return { kind: 'network', message: err.message };
+  }
+  return {
+    kind: 'network',
+    message: err instanceof Error ? err.message : `Erro inesperado ao falar com ${BASE_URL}.`,
+  };
+}
+
+export async function fetchFormTemplates(): Promise<TemplatesResult> {
   try {
     const templates = await apiFetch<FormTemplate[]>('/templates/');
     await cacheTemplates(templates);
-    return { templates, fromCache: false };
-  } catch {
+    return { templates, fromCache: false, failure: null };
+  } catch (err) {
+    const failure = toFailure(err);
     const cached = await getCachedTemplates();
-    return { templates: cached, fromCache: true };
+    return { templates: cached, fromCache: true, failure };
   }
 }
 
 export async function fetchFormTemplateById(id: string): Promise<FormTemplate | null> {
   try {
-    const template = await apiFetch<FormTemplate>(`/templates/${id}`);
-    return template;
-  } catch {
+    return await apiFetch<FormTemplate>(`/templates/${id}`);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) return null;
     const cached = await getCachedTemplates();
     return cached.find((t) => t.id === id) ?? null;
   }

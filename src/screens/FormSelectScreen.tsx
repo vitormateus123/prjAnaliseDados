@@ -7,11 +7,31 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { fetchFormTemplates } from '../services/api/forms/TemplatesService';
+import { fetchFormTemplates, TemplatesFailure } from '../services/api/forms/TemplatesService';
 import { FormTemplate } from '../types/forms';
 import { RootStackParamList } from '../../App';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
+
+/** Três estados diferentes que antes viravam a mesma mensagem genérica. */
+function describeEmpty(failure: TemplatesFailure | null): { title: string; detail?: string } {
+  if (!failure) {
+    return {
+      title: 'Nenhum formulário disponível',
+      detail: 'O servidor respondeu, mas não há formulários ativos cadastrados.',
+    };
+  }
+  if (failure.kind === 'server') {
+    return {
+      title: `O servidor respondeu com erro ${failure.status}`,
+      detail: failure.message,
+    };
+  }
+  return {
+    title: 'Não foi possível conectar ao servidor',
+    detail: failure.message,
+  };
+}
 
 export function FormSelectScreen() {
   const navigation = useNavigation<NavProp>();
@@ -19,12 +39,14 @@ export function FormSelectScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [fromCache, setFromCache] = useState(false);
+  const [failure, setFailure] = useState<TemplatesFailure | null>(null);
 
   const load = useCallback(async (isRefresh = false) => {
     isRefresh ? setRefreshing(true) : setLoading(true);
-    const { templates: data, fromCache: cached } = await fetchFormTemplates();
-    setTemplates(data);
-    setFromCache(cached);
+    const result = await fetchFormTemplates();
+    setTemplates(result.templates);
+    setFromCache(result.fromCache);
+    setFailure(result.failure);
     isRefresh ? setRefreshing(false) : setLoading(false);
   }, []);
 
@@ -47,6 +69,8 @@ export function FormSelectScreen() {
     );
   }
 
+  const empty = describeEmpty(failure);
+
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
@@ -54,16 +78,15 @@ export function FormSelectScreen() {
         <Text style={styles.subtitle}>Escolha o tipo de formulário</Text>
         {fromCache && templates.length > 0 && (
           <Text style={styles.offlineNotice}>
-            ⚠️ Sem conexão — mostrando a última lista salva
+            ⚠️ Sem conexão com o servidor — mostrando a última lista salva
           </Text>
         )}
       </View>
 
       {templates.length === 0 ? (
         <View style={styles.centered}>
-          <Text style={styles.emptyTitle}>
-            {fromCache ? 'Sem conexão e nenhum formulário salvo ainda' : 'Nenhum formulário disponível'}
-          </Text>
+          <Text style={styles.emptyTitle}>{empty.title}</Text>
+          {!!empty.detail && <Text style={styles.emptyDetail}>{empty.detail}</Text>}
           <TouchableOpacity style={styles.retryButton} onPress={() => load()} activeOpacity={0.8}>
             <Text style={styles.retryText}>Tentar de novo</Text>
           </TouchableOpacity>
@@ -105,7 +128,12 @@ const styles = StyleSheet.create({
   offlineNotice: { fontSize: 12, color: '#92400e', marginTop: 8 },
   centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   loadingText: { marginTop: 12, fontSize: 14, color: '#64748b' },
-  emptyTitle: { fontSize: 15, color: '#64748b', textAlign: 'center', marginBottom: 16 },
+  emptyTitle: {
+    fontSize: 16, fontWeight: '700', color: '#0f172a', textAlign: 'center', marginBottom: 6,
+  },
+  emptyDetail: {
+    fontSize: 13, color: '#64748b', textAlign: 'center', marginBottom: 16,
+  },
   retryButton: {
     backgroundColor: '#2563eb', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 10,
   },

@@ -100,7 +100,7 @@ export default function HistoricoScreen() {
     return (
       <View style={styles.emptyState}>
         <Text style={styles.emptyTitle}>Nenhum relatório ainda</Text>
-        <Text style={styles.emptyText}>Crie seu primeiro relatório na aba Captura.</Text>
+        <Text style={styles.emptyText}>Crie seu primeiro relatório abaixo.</Text>
         <TouchableOpacity
           style={[styles.button, styles.buttonPrimary]}
           onPress={() => navigation.navigate('FormSelect')}
@@ -114,6 +114,15 @@ export default function HistoricoScreen() {
 
   return (
     <View style={styles.containerWithPadding}>
+      {/* Botão de novo relatório sempre visível no topo — mesmo com lista cheia */}
+      <TouchableOpacity
+        style={[styles.button, styles.buttonPrimary, { marginBottom: 8 }]}
+        onPress={() => navigation.navigate('FormSelect')}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.buttonText}>+ Novo relatório</Text>
+      </TouchableOpacity>
+
       <FlatList
         data={reports}
         keyExtractor={(item) => item.id}

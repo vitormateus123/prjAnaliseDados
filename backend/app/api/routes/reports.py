@@ -202,7 +202,7 @@ def create_report(report: ReportIn):
             # Upload do arquivo em si (foto/áudio) para o Supabase Storage
             # ainda não está implementado — por enquanto só guardamos
             # local_path. file_url fica NULL até essa próxima etapa existir.
-            supabase.table("captures").upsert(capture_rows).execute()
+            supabase.table("captures").upsert(capture_rows, on_conflict="id").execute()
     except PostgrestAPIError as e:
         raise HTTPException(
             status_code=422,

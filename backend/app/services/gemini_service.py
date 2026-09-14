@@ -7,7 +7,9 @@ from app.schemas.extraction import ExtractedField, FieldHint
 
 _client = genai.Client(api_key=settings.gemini_api_key)
 
-_MODEL = "gemini-3.5-flash-lite"
+# gemini-2.0-flash-lite: modelo gratuito mais leve, suficiente para extração
+# estruturada. Substitui o nome incorreto "gemini-3.5-flash-lite" que não existe.
+_MODEL = "gemini-2.0-flash-lite"
 
 PROMPT_TEMPLATE = """Você é um assistente que extrai informações estruturadas de relatos de trabalhadores de campo (voz ou foto).
 
@@ -72,10 +74,12 @@ async def extract_from_media(
     media_bytes: bytes,
     mime_type: str,
 ) -> list[ExtractedField]:
+    """Extrai campos a partir de uma imagem usando Gemini multimodal.
+    Usa _client.aio para não bloquear o event loop do FastAPI."""
     fields_spec = _build_fields_spec(fields)
     prompt = PROMPT_TEMPLATE.format(fields_spec=fields_spec)
 
-    response = _client.models.generate_content(
+    response = await _client.aio.models.generate_content(
         model=_MODEL,
         contents=[
             prompt,
@@ -92,14 +96,15 @@ async def extract_from_text(
     text: str,
 ) -> list[ExtractedField]:
     """Usado no fluxo de voz: recebe a transcrição (Groq/Whisper) como texto
-    puro e pede ao Gemini para extrair os campos estruturados a partir dela."""
+    puro e pede ao Gemini para extrair os campos estruturados a partir dela.
+    Usa _client.aio para não bloquear o event loop do FastAPI."""
     fields_spec = _build_fields_spec(fields)
     prompt = (
         PROMPT_TEMPLATE.format(fields_spec=fields_spec)
         + f"\n\nTEXTO TRANSCRITO (fala do usuário):\n{text}"
     )
 
-    response = _client.models.generate_content(
+    response = await _client.aio.models.generate_content(
         model=_MODEL,
         contents=prompt,
         config=_generate_config(),

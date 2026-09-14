@@ -42,19 +42,19 @@ async def extract_fields(
             extracted_fields = await gemini_service.extract_from_text(fields, transcript)
             t2 = time.monotonic()
             print(f"[extract] Gemini (extração) levou {t2 - t1:.1f}s", flush=True)
-            model = "whisper-large-v3 + gemini-3.5-flash-lite"
+            model = "whisper-large-v3 + gemini-2.0-flash-lite"
         else:
             # Foto direto para Gemini multimodal
             extracted_fields = await gemini_service.extract_from_media(fields, content, file.content_type)
             t1 = time.monotonic()
             print(f"[extract] Gemini (extração multimodal) levou {t1 - t0:.1f}s", flush=True)
-            model = "gemini-3.5-flash-lite"
+            model = "gemini-2.0-flash-lite"
     except Exception as e:
         print(f"[extract] FALHOU: {type(e).__name__}: {e}", flush=True)
         logger.exception("Falha na extração (%s)", media_type)
         return ExtractResponse(
             success=False, fields=[], provider="gemini",
-            model="gemini-3.5-flash-lite", error=str(e),
+            model="gemini-2.0-flash-lite", error=str(e),
         )
     
     return ExtractResponse(

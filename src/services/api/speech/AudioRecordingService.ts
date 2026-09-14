@@ -24,7 +24,18 @@ export function useAudioCapture() {
       }
       await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: true });
     })();
-  }, []);
+
+    // Cleanup: para a gravação se o componente desmontar enquanto estiver ativa.
+    // Isso evita leak de recursos e crash quando o usuário navega para fora
+    // da tela de Captura sem parar a gravação.
+    return () => {
+      if (recorder) {
+        recorder.stop().catch(() => {
+          // Ignora erro no cleanup — o recorder pode já estar parado
+        });
+      }
+    };
+  }, [recorder]);
 
   async function startRecording(): Promise<void> {
     await recorder.prepareToRecordAsync();

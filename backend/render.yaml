@@ -1,0 +1,28 @@
+# backend/render.yaml
+# Arquivo de configuração para deploy gratuito no Render.com.
+# O Render detecta este arquivo automaticamente quando está na raiz
+# do repositório ou do serviço configurado.
+#
+# Como usar:
+#   1. Crie um novo Web Service no Render.com
+#   2. Aponte para o diretório "backend/" como raiz
+#   3. Configure as variáveis de ambiente abaixo no painel do Render
+
+services:
+  - type: web
+    name: campo-analise-backend
+    runtime: python
+    rootDir: .
+    buildCommand: pip install -r app/requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GEMINI_API_KEY
+        sync: false          # preencher no painel do Render
+      - key: GROQ_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false          # ex: https://seu-app.expo.dev
