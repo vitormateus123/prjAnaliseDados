@@ -7,9 +7,16 @@ from app.schemas.extraction import ExtractedField, FieldHint
 
 _client = genai.Client(api_key=settings.gemini_api_key)
 
-# gemini-2.0-flash-lite: modelo gratuito mais leve, suficiente para extração
-# estruturada. Substitui o nome incorreto "gemini-3.5-flash-lite" que não existe.
-_MODEL = "gemini-2.0-flash-lite"
+# O nome do modelo vem do .env (GEMINI_MODEL) justamente porque o Google
+# aposenta modelos periodicamente — o gemini-2.0-flash-lite foi desligado em
+# 01/06/2026 e passou a responder 404. Trocar de modelo não deve exigir deploy.
+#
+# Padrão atual: gemini-3.5-flash-lite — multimodal (texto, imagem, áudio, PDF),
+# o mais barato da família 3.5 e otimizado para extração estruturada.
+# Observação para a família 3.x: temperature/top_p/top_k são ignorados e o
+# thinking_level já vem em "minimal" no Flash-Lite, que é o que queremos aqui.
+MODEL = settings.gemini_model
+PROVIDER = "gemini"
 
 PROMPT_TEMPLATE = """Você é um assistente que extrai informações estruturadas de relatos de trabalhadores de campo (voz ou foto).
 
@@ -27,6 +34,10 @@ REGRAS:
 Retorne um JSON com esta estrutura exata:
 {{"fields": [{{"key": "chave_do_campo", "value": "valor_extraído", "confidence": 0.95}}]}}
 """
+
+
+class ExtractionError(Exception):
+    """Falha ao obter uma extração utilizável do modelo."""
 
 
 def _build_fields_spec(fields: list[FieldHint]) -> str:
@@ -58,6 +69,8 @@ _RESPONSE_SCHEMA = {
 
 
 def _generate_config() -> types.GenerateContentConfig:
+    # Nada de temperature/top_p/top_k: a partir do Gemini 3 esses valores
+    # são ignorados (e penalties chegam a lançar erro).
     return types.GenerateContentConfig(
         response_mime_type="application/json",
         response_schema=_RESPONSE_SCHEMA,
@@ -65,8 +78,18 @@ def _generate_config() -> types.GenerateContentConfig:
 
 
 def _parse_fields_response(response) -> list[ExtractedField]:
-    data = json.loads(response.text)
-    return [ExtractedField(**f) for f in data["fields"]]
+    raw = getattr(response, "text", None)
+    if not raw:
+        # Acontece quando a resposta é bloqueada por safety ou vem vazia.
+        # Sem isso, o json.loads estouraria com um TypeError confuso.
+        raise ExtractionError(
+            "O modelo não retornou conteúdo. Verifique se a imagem/áudio é legível."
+        )
+    try:
+        data = json.loads(raw)
+        return [ExtractedField(**f) for f in data["fields"]]
+    except (json.JSONDecodeError, KeyError, TypeError) as err:
+        raise ExtractionError(f"Resposta do modelo em formato inesperado: {err}") from err
 
 
 async def extract_from_media(
@@ -80,7 +103,7 @@ async def extract_from_media(
     prompt = PROMPT_TEMPLATE.format(fields_spec=fields_spec)
 
     response = await _client.aio.models.generate_content(
-        model=_MODEL,
+        model=MODEL,
         contents=[
             prompt,
             types.Part.from_bytes(data=media_bytes, mime_type=mime_type),
@@ -105,7 +128,7 @@ async def extract_from_text(
     )
 
     response = await _client.aio.models.generate_content(
-        model=_MODEL,
+        model=MODEL,
         contents=prompt,
         config=_generate_config(),
     )
