@@ -43,6 +43,44 @@ class FormTemplateOut(BaseModel):
     review_status: str = "approved"
 
 
+# ─── gerenciamento manual de formulários/campos ────────────────────────────
+# Usado pela GerenciarFormulariosScreen: criar um template do zero e
+# adicionar/editar/remover campos sem depender da IA propor algo em
+# /extract/auto primeiro.
+
+class FormFieldIn(BaseModel):
+    key: str
+    label: str
+    type: str
+    required: bool = False
+    position: int | None = None
+    description: str | None = None
+    extraction_hint: str | None = None
+    options: list[str] | None = None
+    validation_rules: ValidationRules | None = None
+    is_item_field: bool = False
+
+
+class FormFieldUpdateIn(BaseModel):
+    key: str | None = None
+    label: str | None = None
+    type: str | None = None
+    required: bool | None = None
+    position: int | None = None
+    description: str | None = None
+    extraction_hint: str | None = None
+    options: list[str] | None = None
+    validation_rules: ValidationRules | None = None
+    is_item_field: bool | None = None
+
+
+class FormTemplateCreateIn(BaseModel):
+    name: str
+    description: str | None = None
+    has_items: bool = False
+    fields: list[FormFieldIn] = []
+
+
 # ─── revisão de templates propostos pela IA (Fase 5) ───────────────────────
 
 class TemplateRenameIn(BaseModel):

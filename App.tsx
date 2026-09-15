@@ -10,6 +10,7 @@ import { RevisaoScreen } from './src/screens/RevisaoScreen';
 import HistoricoScreen from './src/screens/Historico';
 import AjustesScreen from './src/screens/Ajustes';
 import { TemplatesRevisaoScreen } from './src/screens/TemplatesRevisao';
+import { GerenciarFormulariosScreen } from './src/screens/GerenciarFormularios';
 import { colors } from './src/theme';
 
 // Tabs da tela "Principal"
@@ -25,6 +26,7 @@ export type RootStackParamList = {
   Captura: { formTemplateId?: string } | undefined;
   Revisao: { reportId: string; extractionFailed?: boolean };
   TemplatesRevisao: undefined;
+  GerenciarFormularios: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
@@ -108,6 +110,11 @@ export default function App() {
           name="TemplatesRevisao"
           component={TemplatesRevisaoScreen}
           options={{ title: 'Formulários pendentes' }}
+        />
+        <Stack.Screen
+          name="GerenciarFormularios"
+          component={GerenciarFormulariosScreen}
+          options={{ title: 'Gerenciar formulários' }}
         />
       </Stack.Navigator>
     </NavigationContainer>

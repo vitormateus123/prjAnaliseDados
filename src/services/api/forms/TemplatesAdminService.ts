@@ -4,7 +4,18 @@
 // permite aprovar, renomear ou mesclar cada um em um template já existente.
 
 import { apiFetch } from '../apiClient';
-import { FormTemplate } from '../../../types/forms';
+import { FormTemplate, FormField, FieldType } from '../../../types/forms';
+
+export interface FieldInput {
+  key: string;
+  label: string;
+  type: FieldType;
+  required?: boolean;
+  description?: string;
+  extraction_hint?: string;
+  options?: string[];
+  is_item_field?: boolean;
+}
 
 export async function fetchPendingTemplates(): Promise<FormTemplate[]> {
   return apiFetch<FormTemplate[]>('/templates/pending');
@@ -30,4 +41,42 @@ export async function mergeTemplate(id: string, targetTemplateId: string): Promi
     { method: 'POST', body: JSON.stringify({ target_template_id: targetTemplateId }) },
   );
   return result.message;
+}
+
+/** Cria um formulário do zero — não passa pela fila de revisão da IA. */
+export async function createTemplate(payload: {
+  name: string;
+  description?: string;
+  has_items?: boolean;
+  fields?: FieldInput[];
+}): Promise<FormTemplate> {
+  return apiFetch<FormTemplate>('/templates/', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Adiciona um campo a um formulário já existente. */
+export async function addField(templateId: string, field: FieldInput): Promise<FormField> {
+  return apiFetch<FormField>(`/templates/${templateId}/fields`, {
+    method: 'POST',
+    body: JSON.stringify(field),
+  });
+}
+
+/** Edita um campo (label, hint, opções etc.) sem afetar valores já salvos. */
+export async function updateField(
+  templateId: string,
+  fieldId: string,
+  changes: Partial<FieldInput>,
+): Promise<FormField> {
+  return apiFetch<FormField>(`/templates/${templateId}/fields/${fieldId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(changes),
+  });
+}
+
+/** Remove um campo. O backend recusa (409) se já houver valores preenchidos. */
+export async function deleteField(templateId: string, fieldId: string): Promise<void> {
+  await apiFetch(`/templates/${templateId}/fields/${fieldId}`, { method: 'DELETE' });
 }

@@ -114,6 +114,21 @@ export default function AjustesScreen() {
           </View>
           <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.actionCard}
+          onPress={() => navigation.navigate('GerenciarFormularios')}
+          activeOpacity={0.85}
+        >
+          <View style={[styles.actionIconWrap, { backgroundColor: colors.primaryLight }]}>
+            <Ionicons name="construct-outline" size={20} color={colors.primary} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.actionTitle}>Gerenciar formulários</Text>
+            <Text style={styles.actionDesc}>Crie formulários e campos manualmente, sem depender da IA</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
