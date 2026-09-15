@@ -129,7 +129,7 @@ export default function HistoricoScreen() {
         <Text style={styles.emptyText}>Crie seu primeiro relatório abaixo.</Text>
         <TouchableOpacity
           style={[styles.button, styles.buttonPrimary]}
-          onPress={() => navigation.navigate('FormSelect')}
+          onPress={() => navigation.navigate('Captura')}
           activeOpacity={0.8}
         >
           <Text style={styles.buttonText}>+ Novo relatório</Text>
@@ -145,7 +145,7 @@ export default function HistoricoScreen() {
       {/* Botão de novo relatório sempre visível no topo — mesmo com lista cheia */}
       <TouchableOpacity
         style={[styles.button, styles.buttonPrimary, { marginBottom: 8 }]}
-        onPress={() => navigation.navigate('FormSelect')}
+        onPress={() => navigation.navigate('Captura')}
         activeOpacity={0.8}
       >
         <Text style={styles.buttonText}>+ Novo relatório</Text>

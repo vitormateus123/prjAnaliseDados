@@ -25,7 +25,13 @@ export interface FormField {
     max?: number;
     pattern?: string;
   };
+  // true = este campo se repete por item quando o template tem has_items=true
+  // (ex: 'produto', 'quantidade'); false = campo único do relatório (ex: 'local').
+  is_item_field?: boolean;
 }
+
+export type TemplateSource = 'manual' | 'ai_generated';
+export type TemplateReviewStatus = 'pending' | 'approved' | 'rejected';
 
 export interface FormTemplate {
   id: string;
@@ -34,4 +40,11 @@ export interface FormTemplate {
   version: number;
   active: boolean;
   fields: FormField[];        // sempre carregados junto
+  // true = relatório desse tipo pode ter uma lista de itens (ver ReportItem
+  // em types/reports.ts), além ou no lugar dos campos de nível de relatório.
+  has_items?: boolean;
+  // 'manual' = criado à mão; 'ai_generated' = proposto pela IA em /extract/auto.
+  source?: TemplateSource;
+  // 'pending' = ainda não revisado por um humano (mas já utilizável).
+  review_status?: TemplateReviewStatus;
 }

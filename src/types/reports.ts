@@ -46,12 +46,47 @@ export interface ExtractionResult {
   model?: string;
 }
 
+// Resposta de POST /extract/auto — o app manda só a mídia, sem escolher
+// template antes; a IA classifica (ou propõe um template novo) e já
+// devolve os campos extraídos (ou itens, quando has_items=true).
+export interface AutoExtractedField {
+  key: string;
+  value: string;
+  confidence: number;
+}
+
+export interface AutoExtractedItem {
+  fields: AutoExtractedField[];
+}
+
+export interface AutoExtractionResult {
+  success: boolean;
+  template_id: string;
+  template_name: string;
+  template_is_new: boolean;
+  has_items: boolean;
+  fields: AutoExtractedField[];
+  items: AutoExtractedItem[];
+  error?: string;
+  provider?: string;
+  model?: string;
+}
+
+// Um item dentro de um relatório com has_items=true (ex: cada produto
+// identificado numa foto de prateleira). Mesma forma de Report.fields,
+// só que aninhado por item — ver report_items/report_item_fields no backend.
+export interface ReportItem {
+  id: string;
+  fields: ReportField[];
+}
+
 export interface Report {
   id: string;                  // UUID gerado localmente
   form_template_id: string;
   form_template_name: string;  // cache para exibição no histórico
   status: ReportStatus;
   fields: ReportField[];
+  items: ReportItem[];         // só preenchido quando o template tem has_items=true
   captures: Capture[];
   created_at: string;
   updated_at: string;

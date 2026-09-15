@@ -10,8 +10,9 @@ import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../App';
 import { StorageService } from '../storage/StorageService';
-import { Report } from '../types/reports';
+import { Report, ReportItem } from '../types/reports';
 import { DynamicFields } from '../components/DynamicFields';
+import { ItemsList } from '../components/ItemsList';
 import { parseFieldValue } from '../utils/fieldValue';
 
 function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
@@ -64,6 +65,10 @@ export function RevisaoScreen() {
     });
   }
 
+  function handleItemsChange(items: ReportItem[]) {
+    setReport((prev) => (prev ? { ...prev, items } : prev));
+  }
+
   async function handleSave() {
     if (!report) return;
     setSaving(true);
@@ -92,6 +97,9 @@ export function RevisaoScreen() {
           onChange={handleChange}
           showEmptyMessage={!!extractionFailed}
         />
+        {report.items && report.items.length > 0 && (
+          <ItemsList items={report.items} onChange={handleItemsChange} />
+        )}
         <TouchableOpacity style={styles.button} onPress={handleSave}>
           <Text style={styles.buttonText}>Salvar relatório</Text>
         </TouchableOpacity>

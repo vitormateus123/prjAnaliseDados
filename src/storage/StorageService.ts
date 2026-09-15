@@ -9,7 +9,11 @@ const REPORTS_KEY = 'campo_reports_v2';
 export const StorageService = {
   async getAllReports(): Promise<Report[]> {
     const raw = await AsyncStorage.getItem(REPORTS_KEY);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as Report[];
+    // Relatórios salvos antes da Fase 1 (itens) não têm `items` no JSON —
+    // normaliza pra [] pra não quebrar quem faz report.items.map/length.
+    return parsed.map((r) => ({ ...r, items: r.items ?? [] }));
   },
 
   async upsertReport(report: Report): Promise<void> {

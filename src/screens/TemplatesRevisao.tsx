@@ -1,0 +1,322 @@
+// src/screens/TemplatesRevisao.tsx
+// Fase 5: tela simples pra revisar os templates que a IA propôs em
+// /extract/auto (review_status='pending') — aprovar como estão, renomear,
+// ou mesclar em um template já existente quando a IA duplicou algo.
+
+import { useCallback, useState } from 'react';
+import {
+  View, Text, TouchableOpacity, FlatList, TextInput,
+  StyleSheet, SafeAreaView, ActivityIndicator, Alert,
+} from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import { FormTemplate } from '../types/forms';
+import { fetchFormTemplates } from '../services/api/forms/TemplatesService';
+import {
+  fetchPendingTemplates, approveTemplate, renameTemplate, mergeTemplate,
+} from '../services/api/forms/TemplatesAdminService';
+import { ApiError, NetworkError } from '../services/api/apiClient';
+
+function describeError(err: unknown): string {
+  if (err instanceof ApiError) return `Erro ${err.status}: ${err.message}`;
+  if (err instanceof NetworkError) return err.message;
+  return err instanceof Error ? err.message : 'Falha inesperada.';
+}
+
+export function TemplatesRevisaoScreen() {
+  const [pending, setPending] = useState<FormTemplate[]>([]);
+  const [allTemplates, setAllTemplates] = useState<FormTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState<string | null>(null);
+
+  // Estado de edição inline: no máximo um template sendo renomeado ou
+  // com o seletor de mesclagem aberto por vez.
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState('');
+  const [draftDescription, setDraftDescription] = useState('');
+  const [mergingId, setMergingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [pendingResult, allResult] = await Promise.all([
+        fetchPendingTemplates(),
+        fetchFormTemplates(),
+      ]);
+      setPending(pendingResult);
+      setAllTemplates(allResult.templates);
+    } catch (err) {
+      Alert.alert('Erro ao carregar', describeError(err));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      load();
+    }, [load]),
+  );
+
+  function startRenaming(template: FormTemplate) {
+    setRenamingId(template.id);
+    setMergingId(null);
+    setDraftName(template.name);
+    setDraftDescription(template.description ?? '');
+  }
+
+  async function handleApprove(template: FormTemplate) {
+    setBusyId(template.id);
+    try {
+      await approveTemplate(template.id);
+      await load();
+    } catch (err) {
+      Alert.alert('Erro ao aprovar', describeError(err));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  async function handleSaveRename(template: FormTemplate) {
+    if (!draftName.trim()) {
+      Alert.alert('Nome obrigatório', 'O formulário precisa de um nome.');
+      return;
+    }
+    setBusyId(template.id);
+    try {
+      await renameTemplate(template.id, {
+        name: draftName.trim(),
+        description: draftDescription.trim() || undefined,
+      });
+      setRenamingId(null);
+      await load();
+    } catch (err) {
+      Alert.alert('Erro ao renomear', describeError(err));
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  function handleConfirmMerge(template: FormTemplate, target: FormTemplate) {
+    Alert.alert(
+      'Mesclar formulário',
+      `Mesclar "${template.name}" em "${target.name}"? Os relatórios que usam "${template.name}" passam a usar "${target.name}", e este template pendente é desativado. Isso não pode ser desfeito.`,
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Mesclar',
+          style: 'destructive',
+          onPress: async () => {
+            setBusyId(template.id);
+            try {
+              const message = await mergeTemplate(template.id, target.id);
+              setMergingId(null);
+              await load();
+              if (message) Alert.alert('Mesclado', message);
+            } catch (err) {
+              Alert.alert('Erro ao mesclar', describeError(err));
+            } finally {
+              setBusyId(null);
+            }
+          },
+        },
+      ],
+    );
+  }
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color="#2563eb" />
+          <Text style={styles.loadingText}>Carregando formulários pendentes...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.safe}>
+      <View style={styles.header}>
+        <Text style={styles.title}>Formulários pendentes</Text>
+        <Text style={styles.subtitle}>
+          Propostos automaticamente pela IA — revise antes que fiquem definitivos.
+        </Text>
+      </View>
+
+      {pending.length === 0 ? (
+        <View style={styles.centered}>
+          <Text style={styles.emptyTitle}>Nenhum formulário pendente</Text>
+          <Text style={styles.emptyDetail}>
+            Formulários novos aparecem aqui quando a IA identifica um tipo de captura
+            que ainda não existia.
+          </Text>
+        </View>
+      ) : (
+        <FlatList
+          data={pending}
+          keyExtractor={(item) => item.id}
+          contentContainerStyle={styles.list}
+          renderItem={({ item }) => {
+            const isBusy = busyId === item.id;
+            const isRenaming = renamingId === item.id;
+            const isMerging = mergingId === item.id;
+            const mergeOptions = allTemplates.filter((t) => t.id !== item.id);
+
+            return (
+              <View style={styles.card}>
+                <View style={styles.cardHeaderRow}>
+                  <Text style={styles.cardTitle}>{item.name}</Text>
+                  {item.has_items && (
+                    <View style={styles.itemsBadge}>
+                      <Text style={styles.itemsBadgeText}>com itens</Text>
+                    </View>
+                  )}
+                </View>
+                {!!item.description && <Text style={styles.cardDesc}>{item.description}</Text>}
+                <Text style={styles.cardFields}>
+                  {item.fields.length} campo(s) — {item.fields.map((f) => f.label).join(', ')}
+                </Text>
+
+                {isRenaming ? (
+                  <View style={{ marginTop: 12 }}>
+                    <TextInput
+                      style={styles.input}
+                      value={draftName}
+                      onChangeText={setDraftName}
+                      placeholder="Nome do formulário"
+                      placeholderTextColor="#94a3b8"
+                    />
+                    <TextInput
+                      style={[styles.input, { marginTop: 8 }]}
+                      value={draftDescription}
+                      onChangeText={setDraftDescription}
+                      placeholder="Descrição (opcional)"
+                      placeholderTextColor="#94a3b8"
+                    />
+                    <View style={styles.actionsRow}>
+                      <TouchableOpacity
+                        style={[styles.actionButton, styles.actionSecondary]}
+                        onPress={() => setRenamingId(null)}
+                        disabled={isBusy}
+                      >
+                        <Text style={styles.actionTextSecondary}>Cancelar</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[styles.actionButton, styles.actionPrimary]}
+                        onPress={() => handleSaveRename(item)}
+                        disabled={isBusy}
+                      >
+                        {isBusy ? (
+                          <ActivityIndicator size="small" color="#fff" />
+                        ) : (
+                          <Text style={styles.actionText}>Salvar</Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ) : isMerging ? (
+                  <View style={{ marginTop: 12 }}>
+                    <Text style={styles.sectionLabel}>Mesclar com:</Text>
+                    {mergeOptions.length === 0 ? (
+                      <Text style={styles.cardDesc}>Nenhum outro formulário disponível.</Text>
+                    ) : (
+                      mergeOptions.map((option) => (
+                        <TouchableOpacity
+                          key={option.id}
+                          style={styles.mergeOption}
+                          onPress={() => handleConfirmMerge(item, option)}
+                          disabled={isBusy}
+                          activeOpacity={0.8}
+                        >
+                          <Text style={styles.mergeOptionText}>{option.name}</Text>
+                        </TouchableOpacity>
+                      ))
+                    )}
+                    <TouchableOpacity
+                      style={[styles.actionButton, styles.actionSecondary, { marginTop: 8 }]}
+                      onPress={() => setMergingId(null)}
+                      disabled={isBusy}
+                    >
+                      <Text style={styles.actionTextSecondary}>Cancelar</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={styles.actionsRow}>
+                    <TouchableOpacity
+                      style={[styles.actionButton, styles.actionSecondary]}
+                      onPress={() => startRenaming(item)}
+                      disabled={isBusy}
+                    >
+                      <Text style={styles.actionTextSecondary}>Renomear</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.actionButton, styles.actionSecondary]}
+                      onPress={() => {
+                        setMergingId(item.id);
+                        setRenamingId(null);
+                      }}
+                      disabled={isBusy}
+                    >
+                      <Text style={styles.actionTextSecondary}>Mesclar</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.actionButton, styles.actionPrimary]}
+                      onPress={() => handleApprove(item)}
+                      disabled={isBusy}
+                    >
+                      {isBusy ? (
+                        <ActivityIndicator size="small" color="#fff" />
+                      ) : (
+                        <Text style={styles.actionText}>Aprovar</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            );
+          }}
+        />
+      )}
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: '#f8fafc' },
+  header: { padding: 24, paddingBottom: 12 },
+  title: { fontSize: 24, fontWeight: '800', color: '#0f172a' },
+  subtitle: { fontSize: 13, color: '#64748b', marginTop: 4 },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
+  loadingText: { marginTop: 12, fontSize: 14, color: '#64748b' },
+  emptyTitle: { fontSize: 16, fontWeight: '700', color: '#0f172a', textAlign: 'center', marginBottom: 6 },
+  emptyDetail: { fontSize: 13, color: '#64748b', textAlign: 'center' },
+  list: { padding: 16, gap: 12, paddingBottom: 32 },
+  card: {
+    backgroundColor: '#fff', borderRadius: 14, padding: 16,
+    borderWidth: 1, borderColor: '#e2e8f0',
+  },
+  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: '#0f172a', flexShrink: 1 },
+  cardDesc: { fontSize: 13, color: '#64748b', marginTop: 4 },
+  cardFields: { fontSize: 12, color: '#94a3b8', marginTop: 8 },
+  itemsBadge: { backgroundColor: '#e0e7ff', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 },
+  itemsBadgeText: { fontSize: 11, fontWeight: '700', color: '#4338ca' },
+  sectionLabel: { fontSize: 13, fontWeight: '700', color: '#334155', marginBottom: 6 },
+  input: {
+    minHeight: 44, borderRadius: 10, borderWidth: 1, borderColor: '#cbd5e1',
+    backgroundColor: '#fff', paddingHorizontal: 12, fontSize: 14, color: '#0f172a',
+  },
+  actionsRow: { flexDirection: 'row', marginTop: 12, gap: 8 },
+  actionButton: {
+    flex: 1, height: 44, borderRadius: 10, justifyContent: 'center', alignItems: 'center',
+  },
+  actionPrimary: { backgroundColor: '#2563eb' },
+  actionSecondary: { backgroundColor: '#e2e8f0' },
+  actionText: { fontSize: 13, fontWeight: '700', color: '#fff' },
+  actionTextSecondary: { fontSize: 13, fontWeight: '700', color: '#334155' },
+  mergeOption: {
+    backgroundColor: '#f1f5f9', borderRadius: 10, paddingVertical: 10,
+    paddingHorizontal: 12, marginBottom: 6,
+  },
+  mergeOptionText: { fontSize: 14, fontWeight: '600', color: '#0f172a' },
+});

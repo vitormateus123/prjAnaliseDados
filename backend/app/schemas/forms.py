@@ -35,3 +35,27 @@ class FormTemplateOut(BaseModel):
     # true = relatório desse tipo pode ter uma lista de itens (report_items),
     # além ou no lugar dos campos de nível de relatório.
     has_items: bool = False
+    # 'manual' = criado por um humano (seed/admin); 'ai_generated' = proposto
+    # pela IA em /extract/auto quando nenhum template existente encaixava.
+    source: str = "manual"
+    # 'pending' = ainda não foi revisado por um humano (mas já é utilizável);
+    # 'approved' = revisado e confirmado; 'rejected' = não deve mais ser usado.
+    review_status: str = "approved"
+
+
+# ─── revisão de templates propostos pela IA (Fase 5) ───────────────────────
+
+class TemplateRenameIn(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class TemplateMergeIn(BaseModel):
+    # id do template "bom" que deve absorver o template pendente
+    target_template_id: str
+
+
+class TemplateActionOut(BaseModel):
+    success: bool
+    id: str
+    message: str | None = None

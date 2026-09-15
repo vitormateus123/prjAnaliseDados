@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { View, Text, TouchableOpacity, Alert } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, NavigationProp } from '@react-navigation/native';
 import { StorageService } from '../storage/StorageService';
 import { syncPendingReports } from '../services/sync/SyncService';
 import { styles } from '../styles';
+import { RootStackParamList } from '../../App';
 
 export default function AjustesScreen() {
+  const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [isOnline, setIsOnline] = useState<boolean | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const [syncing, setSyncing] = useState(false);
@@ -83,6 +85,14 @@ export default function AjustesScreen() {
         <Text style={styles.buttonText}>
           {syncing ? 'Sincronizando...' : '🔄 Sincronizar agora'}
         </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[styles.button, styles.buttonSecondary]}
+        onPress={() => navigation.navigate('TemplatesRevisao')}
+        activeOpacity={0.8}
+      >
+        <Text style={styles.buttonTextSecondary}>📋 Revisar formulários pendentes</Text>
       </TouchableOpacity>
     </View>
   );
