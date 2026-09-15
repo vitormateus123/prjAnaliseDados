@@ -28,12 +28,20 @@ class CaptureIn(BaseModel):
     created_at: str
 
 
+class ReportItemIn(BaseModel):
+    # id gerado no app (mesmo padrão de Report.id) — permite upsert idempotente
+    # igual ao resto do sync, sem depender do banco gerar o id primeiro.
+    id: str
+    fields: list[ReportFieldIn] = []
+
+
 class ReportIn(BaseModel):
     id: str
     form_template_id: str
     form_template_name: str
     status: str
     fields: list[ReportFieldIn] = []
+    items: list[ReportItemIn] = []   # só preenchido quando o template tem has_items=True
     captures: list[CaptureIn] = []
     created_at: str
     updated_at: str
@@ -59,12 +67,18 @@ class CaptureOut(BaseModel):
     created_at: str
 
 
+class ReportItemOut(BaseModel):
+    id: str
+    fields: list[ReportFieldOut] = []
+
+
 class ReportOut(BaseModel):
     id: str
     form_template_id: str
     form_template_name: str
     status: str
     fields: list[ReportFieldOut] = []
+    items: list[ReportItemOut] = []
     captures: list[CaptureOut] = []
     created_at: str
     updated_at: str

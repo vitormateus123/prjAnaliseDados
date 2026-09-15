@@ -1,11 +1,17 @@
 # backend/app/schemas/extraction.py
 from pydantic import BaseModel, Field
 
+# ─── extração "clássica" (endpoint /extract/, template já escolhido) ──────
+
 class FieldHint(BaseModel):
     key: str
     label: str
     extraction_hint: str | None = None
     type: str = "text"
+    # Só importa quando o template tem has_items=True: diz se este campo se
+    # repete por item (ex: "produto") ou é único no relatório (ex: "local").
+    is_item_field: bool = False
+
 
 class ExtractRequest(BaseModel):
     form_template_id: str
@@ -21,6 +27,71 @@ class ExtractedField(BaseModel):
 class ExtractResponse(BaseModel):
     success: bool
     fields: list[ExtractedField]
+    provider: str
+    model: str
+    error: str | None = None
+
+
+# ─── catálogo enviado à IA para classificação ──────────────────────────────
+
+class TemplateCatalogField(BaseModel):
+    key: str
+    label: str
+    type: str
+    extraction_hint: str | None = None
+    options: list[str] | None = None
+    is_item_field: bool = False
+
+
+class TemplateCatalogEntry(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    has_items: bool = False
+    fields: list[TemplateCatalogField] = []
+
+
+# ─── resposta da IA: usar template existente ou propor um novo ────────────
+
+class ProposedField(BaseModel):
+    key: str
+    label: str
+    type: str
+    extraction_hint: str | None = None
+    options: list[str] | None = None
+    is_item_field: bool = False
+
+
+class ProposedTemplate(BaseModel):
+    name: str
+    description: str | None = None
+    has_items: bool = False
+    fields: list[ProposedField] = []
+
+
+class ClassificationResult(BaseModel):
+    match: str  # 'existing' | 'new'
+    template_id: str | None = None
+    new_template: ProposedTemplate | None = None
+
+
+# ─── resposta do endpoint /extract/auto ────────────────────────────────────
+# Espelha src/types/reports.ts (Report/ReportField) mais src/types/forms.ts
+# (FormTemplate) — a Fase 3/4 no app consome isso para montar a tela de
+# Revisão sem precisar de uma segunda chamada.
+
+class ExtractedItem(BaseModel):
+    fields: list[ExtractedField]
+
+
+class AutoExtractResponse(BaseModel):
+    success: bool
+    template_id: str
+    template_name: str
+    template_is_new: bool
+    has_items: bool
+    fields: list[ExtractedField] = []   # campos de nível de relatório (sempre presentes)
+    items: list[ExtractedItem] = []     # só preenchido quando has_items=True
     provider: str
     model: str
     error: str | None = None

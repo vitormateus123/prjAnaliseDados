@@ -4,6 +4,7 @@ import { useNavigation, useFocusEffect, NavigationProp } from '@react-navigation
 import { StorageService } from '../storage/StorageService';
 import { fetchRemoteReports } from '../services/api/reports/ReportsService';
 import { syncReport } from '../services/sync/SyncService';
+import { NetworkError, ApiError } from '../services/api/apiClient';
 import { Report } from '../types/reports';
 import { styles } from '../styles';
 import { RootStackParamList } from '../../App';
@@ -29,17 +30,23 @@ function captureIcon(report: Report): string {
   return '✍️';
 }
 
+function describeRemoteError(err: unknown): string {
+  if (err instanceof NetworkError) return err.message;
+  if (err instanceof ApiError) return `O servidor respondeu com erro ${err.status}: ${err.message}`;
+  return err instanceof Error ? err.message : 'Falha desconhecida ao buscar relatórios do servidor.';
+}
+
 export default function HistoricoScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [reports, setReports] = useState<Report[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  // Antes esse erro era engolido em silêncio e a tela só mostrava o que já
+  // estava local, sem nenhuma pista do porquê os dados do Supabase não
+  // apareciam. Agora fica visível como um aviso no topo da lista.
+  const [remoteError, setRemoteError] = useState<string | null>(null);
 
-  // Mescla o que está no Supabase com o que só existe localmente ainda
-  // (rascunhos e pendentes de sync). Um relatório remoto sempre é a
-  // versão mais confiável dele mesmo — só entra localmente se ainda não
-  // existir aqui (evita sobrescrever uma edição local em andamento).
   const refreshList = useCallback(async (isRefresh = false) => {
     isRefresh ? setRefreshing(true) : setLoading(true);
 
@@ -52,8 +59,10 @@ export default function HistoricoScreen() {
       for (const report of onlyRemote) {
         await StorageService.upsertReport(report);
       }
-    } catch {
-      // offline ou backend fora do ar — mostra só o que já está local
+      setRemoteError(null);
+    } catch (err) {
+      if (__DEV__) console.error('[Historico] falha ao buscar relatórios remotos', err);
+      setRemoteError(describeRemoteError(err));
     }
 
     const merged = await StorageService.getAllReports();
@@ -96,9 +105,26 @@ export default function HistoricoScreen() {
     );
   }
 
+  const remoteErrorBanner = remoteError && (
+    <View
+      style={{
+        backgroundColor: '#fef3c7',
+        borderRadius: 10,
+        padding: 12,
+        marginBottom: 12,
+      }}
+    >
+      <Text style={{ fontSize: 12, fontWeight: '700', color: '#92400e' }}>
+        Não foi possível buscar os relatórios do servidor
+      </Text>
+      <Text style={{ fontSize: 12, color: '#92400e', marginTop: 2 }}>{remoteError}</Text>
+    </View>
+  );
+
   if (reports.length === 0) {
     return (
       <View style={styles.emptyState}>
+        {remoteErrorBanner}
         <Text style={styles.emptyTitle}>Nenhum relatório ainda</Text>
         <Text style={styles.emptyText}>Crie seu primeiro relatório abaixo.</Text>
         <TouchableOpacity
@@ -114,6 +140,8 @@ export default function HistoricoScreen() {
 
   return (
     <View style={styles.containerWithPadding}>
+      {remoteErrorBanner}
+
       {/* Botão de novo relatório sempre visível no topo — mesmo com lista cheia */}
       <TouchableOpacity
         style={[styles.button, styles.buttonPrimary, { marginBottom: 8 }]}

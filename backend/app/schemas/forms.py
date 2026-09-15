@@ -21,6 +21,8 @@ class FormFieldOut(BaseModel):
     extraction_hint: str | None = None
     options: list[str] | None = None
     validation_rules: ValidationRules | None = None
+    # true = este campo se repete por item quando o template tem has_items=True
+    is_item_field: bool = False
 
 
 class FormTemplateOut(BaseModel):
@@ -30,3 +32,6 @@ class FormTemplateOut(BaseModel):
     version: int
     active: bool
     fields: list[FormFieldOut] = []
+    # true = relatório desse tipo pode ter uma lista de itens (report_items),
+    # além ou no lugar dos campos de nível de relatório.
+    has_items: bool = False

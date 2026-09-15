@@ -15,7 +15,10 @@ def _load_fields(template_id: str) -> list[FormFieldOut]:
         .order("position")
         .execute()
     )
-    return [FormFieldOut(**f) for f in (fields_resp.data or [])]
+    return [
+        FormFieldOut(**{**f, "is_item_field": f.get("is_item_field", False)})
+        for f in (fields_resp.data or [])
+    ]
 
 
 @router.get("/", response_model=list[FormTemplateOut])
@@ -39,6 +42,7 @@ def list_templates():
             description=template.get("description"),
             version=template["version"],
             active=template["active"],
+            has_items=template.get("has_items", False),
             fields=_load_fields(template["id"]),
         )
         for template in templates
@@ -68,5 +72,6 @@ def get_template(template_id: str):
         description=template.get("description"),
         version=template["version"],
         active=template["active"],
+        has_items=template.get("has_items", False),
         fields=_load_fields(template_id),
     )
