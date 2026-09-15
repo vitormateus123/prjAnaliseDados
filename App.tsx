@@ -1,5 +1,5 @@
 // App.tsx
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,8 @@ import CapturaScreen from './src/screens/Captura';
 import { RevisaoScreen } from './src/screens/RevisaoScreen';
 import HistoricoScreen from './src/screens/Historico';
 import AjustesScreen from './src/screens/Ajustes';
+import { TemplatesRevisaoScreen } from './src/screens/TemplatesRevisao';
+import { colors } from './src/theme';
 
 // Tabs da tela "Principal"
 export type MainTabParamList = {
@@ -20,22 +22,55 @@ export type MainTabParamList = {
 export type RootStackParamList = {
   Principal: { screen?: keyof MainTabParamList } | undefined;
   FormSelect: undefined;
-  Captura: { formTemplateId: string };
+  Captura: { formTemplateId?: string } | undefined;
   Revisao: { reportId: string; extractionFailed?: boolean };
+  TemplatesRevisao: undefined;
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const Tab = createBottomTabNavigator<MainTabParamList>();
+
+const navTheme = {
+  ...DefaultTheme,
+  colors: {
+    ...DefaultTheme.colors,
+    background: colors.bg,
+    primary: colors.primary,
+    card: colors.surface,
+    border: colors.border,
+    text: colors.textPrimary,
+  },
+};
+
+const screenHeaderOptions = {
+  headerStyle: { backgroundColor: colors.surface },
+  headerTitleStyle: { fontWeight: '800' as const, color: colors.textPrimary, fontSize: 17 },
+  headerTintColor: colors.primary,
+  headerShadowVisible: false,
+};
 
 function MainTabs() {
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
-        tabBarIcon: ({ color, size }) => {
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textMuted,
+        tabBarLabelStyle: { fontSize: 11, fontWeight: '700', marginBottom: 4 },
+        tabBarStyle: {
+          backgroundColor: colors.surface,
+          borderTopColor: colors.border,
+          borderTopWidth: 1,
+          height: 64,
+          paddingTop: 8,
+          paddingBottom: 10,
+        },
+        tabBarIcon: ({ color, focused, size }) => {
           const iconName =
-            route.name === 'Histórico' ? 'time-outline' : 'settings-outline';
-          return <Ionicons name={iconName} size={size} color={color} />;
+            route.name === 'Histórico'
+              ? focused ? 'time' : 'time-outline'
+              : focused ? 'settings' : 'settings-outline';
+          return <Ionicons name={iconName as any} size={size - 1} color={color} />;
         },
       })}
     >
@@ -47,8 +82,8 @@ function MainTabs() {
 
 export default function App() {
   return (
-    <NavigationContainer>
-      <Stack.Navigator>
+    <NavigationContainer theme={navTheme}>
+      <Stack.Navigator screenOptions={screenHeaderOptions}>
         <Stack.Screen
           name="Principal"
           component={MainTabs}
@@ -68,6 +103,11 @@ export default function App() {
           name="Revisao"
           component={RevisaoScreen}
           options={{ title: 'Revisão' }}
+        />
+        <Stack.Screen
+          name="TemplatesRevisao"
+          component={TemplatesRevisaoScreen}
+          options={{ title: 'Formulários pendentes' }}
         />
       </Stack.Navigator>
     </NavigationContainer>

@@ -1,33 +1,37 @@
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, FlatList, ActivityIndicator } from 'react-native';
+import {
+  View, Text, TouchableOpacity, FlatList, ActivityIndicator,
+  StyleSheet, SafeAreaView,
+} from 'react-native';
 import { useNavigation, useFocusEffect, NavigationProp } from '@react-navigation/native';
+import { Ionicons } from '@expo/vector-icons';
 import { StorageService } from '../storage/StorageService';
 import { fetchRemoteReports } from '../services/api/reports/ReportsService';
 import { syncReport } from '../services/sync/SyncService';
 import { NetworkError, ApiError } from '../services/api/apiClient';
 import { Report } from '../types/reports';
-import { styles } from '../styles';
 import { RootStackParamList } from '../../App';
+import { colors, radius, shadows, spacing } from '../theme';
 
 const STATUS_LABEL: Record<Report['status'], string> = {
-  draft: '📝 Rascunho',
-  pending_sync: '⏳ Pendente',
-  synced: '✓ Sincronizado',
-  error: '⚠️ Erro',
+  draft: 'Rascunho',
+  pending_sync: 'Pendente',
+  synced: 'Sincronizado',
+  error: 'Erro',
 };
 
-const STATUS_COLOR: Record<Report['status'], string> = {
-  draft: '#475569',
-  pending_sync: '#92400e',
-  synced: '#065f46',
-  error: '#991b1b',
+const STATUS_STYLE: Record<Report['status'], { bg: string; text: string; icon: keyof typeof Ionicons.glyphMap }> = {
+  draft: { bg: '#eef0f5', text: '#475569', icon: 'document-text-outline' },
+  pending_sync: { bg: colors.warningSoft, text: colors.warningStrong, icon: 'time-outline' },
+  synced: { bg: colors.successSoft, text: colors.successStrong, icon: 'checkmark-circle' },
+  error: { bg: colors.dangerSoft, text: colors.dangerStrong, icon: 'alert-circle' },
 };
 
-function captureIcon(report: Report): string {
+function captureMeta(report: Report): { icon: keyof typeof Ionicons.glyphMap; bg: string; color: string } {
   const type = report.captures[0]?.type;
-  if (type === 'voice') return '🎤';
-  if (type === 'photo') return '📷';
-  return '✍️';
+  if (type === 'voice') return { icon: 'mic', bg: colors.primaryLight, color: colors.primary };
+  if (type === 'photo') return { icon: 'camera', bg: colors.accentSoft, color: colors.accent };
+  return { icon: 'create', bg: colors.infoSoft, color: colors.infoStrong };
 }
 
 function describeRemoteError(err: unknown): string {
@@ -99,126 +103,205 @@ export default function HistoricoScreen() {
 
   if (loading) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Carregando...</Text>
+      <View style={local.centered}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={local.loadingText}>Carregando...</Text>
       </View>
     );
   }
 
+  const pendingCount = reports.filter((r) => r.status === 'pending_sync' || r.status === 'error').length;
+
   const remoteErrorBanner = remoteError && (
-    <View
-      style={{
-        backgroundColor: '#fef3c7',
-        borderRadius: 10,
-        padding: 12,
-        marginBottom: 12,
-      }}
-    >
-      <Text style={{ fontSize: 12, fontWeight: '700', color: '#92400e' }}>
-        Não foi possível buscar os relatórios do servidor
-      </Text>
-      <Text style={{ fontSize: 12, color: '#92400e', marginTop: 2 }}>{remoteError}</Text>
+    <View style={local.warningBanner}>
+      <Ionicons name="cloud-offline-outline" size={16} color={colors.warningStrong} />
+      <View style={{ flex: 1, marginLeft: spacing.sm }}>
+        <Text style={local.warningTitle}>Não foi possível buscar os relatórios do servidor</Text>
+        <Text style={local.warningDetail}>{remoteError}</Text>
+      </View>
+    </View>
+  );
+
+  const header = (
+    <View style={local.hero}>
+      <View>
+        <Text style={local.heroEyebrow}>SEUS RELATÓRIOS</Text>
+        <Text style={local.heroTitle}>Histórico</Text>
+        {reports.length > 0 && (
+          <Text style={local.heroSubtitle}>
+            {reports.length} {reports.length === 1 ? 'relatório' : 'relatórios'}
+            {pendingCount > 0 ? ` · ${pendingCount} aguardando sincronização` : ' · tudo em dia'}
+          </Text>
+        )}
+      </View>
+      <TouchableOpacity
+        style={local.newButton}
+        onPress={() => navigation.navigate('Captura')}
+        activeOpacity={0.85}
+      >
+        <Ionicons name="add" size={20} color={colors.textOnPrimary} />
+        <Text style={local.newButtonText}>Novo</Text>
+      </TouchableOpacity>
     </View>
   );
 
   if (reports.length === 0) {
     return (
-      <View style={styles.emptyState}>
-        {remoteErrorBanner}
-        <Text style={styles.emptyTitle}>Nenhum relatório ainda</Text>
-        <Text style={styles.emptyText}>Crie seu primeiro relatório abaixo.</Text>
-        <TouchableOpacity
-          style={[styles.button, styles.buttonPrimary]}
-          onPress={() => navigation.navigate('Captura')}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.buttonText}>+ Novo relatório</Text>
-        </TouchableOpacity>
-      </View>
+      <SafeAreaView style={local.safe}>
+        {header}
+        <View style={local.emptyState}>
+          {remoteErrorBanner}
+          <View style={local.emptyIconWrap}>
+            <Ionicons name="folder-open-outline" size={36} color={colors.primary} />
+          </View>
+          <Text style={local.emptyTitle}>Nenhum relatório ainda</Text>
+          <Text style={local.emptyText}>Toque em "Novo" para criar seu primeiro relatório.</Text>
+        </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <View style={styles.containerWithPadding}>
-      {remoteErrorBanner}
-
-      {/* Botão de novo relatório sempre visível no topo — mesmo com lista cheia */}
-      <TouchableOpacity
-        style={[styles.button, styles.buttonPrimary, { marginBottom: 8 }]}
-        onPress={() => navigation.navigate('Captura')}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.buttonText}>+ Novo relatório</Text>
-      </TouchableOpacity>
-
+    <SafeAreaView style={local.safe}>
+      {header}
       <FlatList
         data={reports}
         keyExtractor={(item) => item.id}
-        contentContainerStyle={{ paddingBottom: 32 }}
+        contentContainerStyle={local.list}
         onRefresh={() => refreshList(true)}
         refreshing={refreshing}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.card}
-            onPress={() => handleOpenReport(item)}
-            activeOpacity={0.9}
-          >
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-              <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 16, fontWeight: '600', color: '#0f172a' }}>
-                  {item.form_template_name}
-                </Text>
-                <Text style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
-                  {captureIcon(item)} —{' '}
-                  {new Date(item.created_at).toLocaleDateString('pt-BR')}
-                </Text>
+        ListHeaderComponent={remoteErrorBanner || undefined}
+        renderItem={({ item }) => {
+          const meta = captureMeta(item);
+          const status = STATUS_STYLE[item.status];
+          return (
+            <TouchableOpacity
+              style={local.card}
+              onPress={() => handleOpenReport(item)}
+              activeOpacity={0.9}
+            >
+              <View style={local.cardRow}>
+                <View style={[local.captureIcon, { backgroundColor: meta.bg }]}>
+                  <Ionicons name={meta.icon} size={20} color={meta.color} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={local.cardTitle} numberOfLines={1}>{item.form_template_name}</Text>
+                  <Text style={local.cardDate}>
+                    {new Date(item.created_at).toLocaleDateString('pt-BR', {
+                      day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+                    })}
+                  </Text>
+                </View>
+                <View style={[local.statusPill, { backgroundColor: status.bg }]}>
+                  <Ionicons name={status.icon} size={12} color={status.text} />
+                  <Text style={[local.statusText, { color: status.text }]}>{STATUS_LABEL[item.status]}</Text>
+                </View>
               </View>
-              <View style={{ alignItems: 'flex-end' }}>
-                <Text style={{ fontSize: 12, fontWeight: '600', color: STATUS_COLOR[item.status] }}>
-                  {STATUS_LABEL[item.status]}
-                </Text>
-              </View>
-            </View>
-            {item.status === 'error' && item.sync_error && (
-              <Text style={{ fontSize: 12, color: '#991b1b', marginTop: 6 }} numberOfLines={3}>
-                {item.sync_error}
-              </Text>
-            )}
-            <View style={{ flexDirection: 'row', marginTop: 12 }}>
-              <TouchableOpacity
-                style={[styles.actionButton, styles.actionSecondary, { marginRight: 8 }]}
-                onPress={() => handleOpenReport(item)}
-                activeOpacity={0.8}
-              >
-                <Text style={styles.actionTextSecondary}>Editar</Text>
-              </TouchableOpacity>
-              {item.status !== 'synced' && (
-                <TouchableOpacity
-                  style={[styles.actionButton, { backgroundColor: '#d1fae5', marginRight: 8 }]}
-                  onPress={() => handleSyncReport(item)}
-                  activeOpacity={0.8}
-                  disabled={syncingId === item.id}
-                >
-                  {syncingId === item.id ? (
-                    <ActivityIndicator size="small" color="#065f46" />
-                  ) : (
-                    <Text style={{ fontSize: 14, fontWeight: '700', color: '#065f46' }}>
-                      Sincronizar
-                    </Text>
-                  )}
-                </TouchableOpacity>
+
+              {item.status === 'error' && item.sync_error && (
+                <Text style={local.syncError} numberOfLines={2}>{item.sync_error}</Text>
               )}
-              <TouchableOpacity
-                style={[styles.actionButton, { backgroundColor: '#fee2e2' }]}
-                onPress={() => handleDeleteReport(item)}
-                activeOpacity={0.8}
-              >
-                <Text style={{ fontSize: 14, fontWeight: '700', color: '#991b1b' }}>Excluir</Text>
-              </TouchableOpacity>
-            </View>
-          </TouchableOpacity>
-        )}
+
+              <View style={local.cardActions}>
+                <TouchableOpacity
+                  style={local.iconAction}
+                  onPress={() => handleOpenReport(item)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="pencil-outline" size={16} color={colors.textSecondary} />
+                  <Text style={local.iconActionText}>Editar</Text>
+                </TouchableOpacity>
+
+                {item.status !== 'synced' && (
+                  <TouchableOpacity
+                    style={local.iconAction}
+                    onPress={() => handleSyncReport(item)}
+                    activeOpacity={0.7}
+                    disabled={syncingId === item.id}
+                  >
+                    {syncingId === item.id ? (
+                      <ActivityIndicator size="small" color={colors.successStrong} />
+                    ) : (
+                      <>
+                        <Ionicons name="sync-outline" size={16} color={colors.successStrong} />
+                        <Text style={[local.iconActionText, { color: colors.successStrong }]}>Sincronizar</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity
+                  style={[local.iconAction, { marginRight: 0 }]}
+                  onPress={() => handleDeleteReport(item)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons name="trash-outline" size={16} color={colors.danger} />
+                  <Text style={[local.iconActionText, { color: colors.danger }]}>Excluir</Text>
+                </TouchableOpacity>
+              </View>
+            </TouchableOpacity>
+          );
+        }}
       />
-    </View>
+    </SafeAreaView>
   );
 }
+
+const local = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.bg },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.bg },
+  loadingText: { marginTop: spacing.md, fontSize: 14, color: colors.textSecondary },
+  hero: {
+    flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between',
+    paddingHorizontal: spacing.xxl, paddingTop: spacing.xl, paddingBottom: spacing.lg,
+  },
+  heroEyebrow: { fontSize: 11, fontWeight: '800', color: colors.primary, letterSpacing: 1.2 },
+  heroTitle: { fontSize: 26, fontWeight: '800', color: colors.textPrimary, letterSpacing: -0.4, marginTop: 2 },
+  heroSubtitle: { fontSize: 13, color: colors.textSecondary, marginTop: 4, fontWeight: '500' },
+  newButton: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: colors.primary,
+    borderRadius: radius.pill, paddingVertical: 10, paddingHorizontal: 16,
+    ...shadows.sm,
+  },
+  newButtonText: { color: colors.textOnPrimary, fontWeight: '700', fontSize: 14, marginLeft: 4 },
+  warningBanner: {
+    flexDirection: 'row', backgroundColor: colors.warningSoft, borderRadius: radius.md,
+    padding: spacing.md, marginHorizontal: spacing.xxl, marginBottom: spacing.md,
+  },
+  warningTitle: { fontSize: 12, fontWeight: '700', color: colors.warningStrong },
+  warningDetail: { fontSize: 12, color: colors.warningStrong, marginTop: 2 },
+  emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xxxl },
+  emptyIconWrap: {
+    width: 72, height: 72, borderRadius: 36, backgroundColor: colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center', marginBottom: spacing.lg,
+  },
+  emptyTitle: { fontSize: 18, fontWeight: '800', color: colors.textPrimary, marginBottom: 6, textAlign: 'center' },
+  emptyText: { fontSize: 14, color: colors.textSecondary, textAlign: 'center', lineHeight: 20 },
+  list: { paddingHorizontal: spacing.xxl, paddingBottom: spacing.xxxl, gap: spacing.md },
+  card: {
+    backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg,
+    borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md,
+    ...shadows.sm,
+  },
+  cardRow: { flexDirection: 'row', alignItems: 'center' },
+  captureIcon: {
+    width: 42, height: 42, borderRadius: radius.md,
+    alignItems: 'center', justifyContent: 'center', marginRight: spacing.md,
+  },
+  cardTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary },
+  cardDate: { fontSize: 12, color: colors.textMuted, marginTop: 2, fontWeight: '500' },
+  statusPill: {
+    flexDirection: 'row', alignItems: 'center', borderRadius: radius.pill,
+    paddingHorizontal: 10, paddingVertical: 5, gap: 4,
+  },
+  statusText: { fontSize: 11, fontWeight: '700' },
+  syncError: { fontSize: 12, color: colors.dangerStrong, marginTop: spacing.sm },
+  cardActions: {
+    flexDirection: 'row', marginTop: spacing.md, paddingTop: spacing.md,
+    borderTopWidth: 1, borderTopColor: colors.border,
+  },
+  iconAction: {
+    flexDirection: 'row', alignItems: 'center', marginRight: spacing.lg, gap: 5,
+  },
+  iconActionText: { fontSize: 12, fontWeight: '700', color: colors.textSecondary },
+});

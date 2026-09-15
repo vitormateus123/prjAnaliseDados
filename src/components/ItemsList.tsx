@@ -2,12 +2,13 @@
 // Fase 4: UI de lista de itens na tela de Revisão — adicionar, remover e
 // editar cada item de um relatório com has_items=true (ex: cada produto
 // identificado numa foto de prateleira).
-import { View, Text, TouchableOpacity } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
 import * as Crypto from 'expo-crypto';
+import { Ionicons } from '@expo/vector-icons';
 import { ReportItem } from '../types/reports';
 import { emptyFieldValue, parseFieldValue } from '../utils/fieldValue';
 import { DynamicFields } from './DynamicFields';
-import { styles } from '../styles';
+import { colors, radius, shadows, spacing } from '../theme';
 
 interface ItemsListProps {
   items: ReportItem[];
@@ -60,28 +61,23 @@ export function ItemsList({ items, onChange }: ItemsListProps) {
   }
 
   return (
-    <View style={{ marginBottom: 20 }}>
-      <Text style={styles.sectionTitle}>Itens ({items.length})</Text>
+    <View style={{ marginBottom: spacing.lg }}>
+      <View style={local.sectionHeader}>
+        <Ionicons name="layers-outline" size={16} color={colors.textSecondary} />
+        <Text style={local.sectionTitle}>Itens ({items.length})</Text>
+      </View>
 
       {items.map((item, idx) => (
-        <View
-          key={item.id}
-          style={[styles.card, { borderWidth: 1, borderColor: '#e2e8f0', marginTop: 12 }]}
-        >
-          <View
-            style={{
-              flexDirection: 'row',
-              justifyContent: 'space-between',
-              alignItems: 'center',
-              marginBottom: 4,
-            }}
-          >
-            <Text style={{ fontSize: 15, fontWeight: '700', color: '#0f172a' }}>
-              Item {idx + 1}
-            </Text>
+        <View key={item.id} style={local.itemCard}>
+          <View style={local.itemHeader}>
+            <View style={local.itemBadge}>
+              <Text style={local.itemBadgeText}>{idx + 1}</Text>
+            </View>
+            <Text style={local.itemTitle}>Item {idx + 1}</Text>
             {items.length > 1 && (
-              <TouchableOpacity onPress={() => handleRemove(idx)} activeOpacity={0.7}>
-                <Text style={{ color: '#dc2626', fontWeight: '700', fontSize: 13 }}>Remover</Text>
+              <TouchableOpacity onPress={() => handleRemove(idx)} activeOpacity={0.7} style={local.removeButton}>
+                <Ionicons name="trash-outline" size={14} color={colors.danger} />
+                <Text style={local.removeText}>Remover</Text>
               </TouchableOpacity>
             )}
           </View>
@@ -93,13 +89,34 @@ export function ItemsList({ items, onChange }: ItemsListProps) {
         </View>
       ))}
 
-      <TouchableOpacity
-        style={[styles.button, styles.buttonSecondary, { marginTop: 12, height: 48 }]}
-        onPress={handleAdd}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.buttonTextSecondary}>+ Adicionar item</Text>
+      <TouchableOpacity style={local.addButton} onPress={handleAdd} activeOpacity={0.85}>
+        <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
+        <Text style={local.addButtonText}>Adicionar item</Text>
       </TouchableOpacity>
     </View>
   );
 }
+
+const local = StyleSheet.create({
+  sectionHeader: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: spacing.sm },
+  sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.textPrimary },
+  itemCard: {
+    backgroundColor: colors.surfaceAlt, borderRadius: radius.lg, padding: spacing.lg,
+    borderWidth: 1, borderColor: colors.border, marginTop: spacing.md,
+  },
+  itemHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.md, gap: spacing.sm },
+  itemBadge: {
+    width: 22, height: 22, borderRadius: 11, backgroundColor: colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  itemBadgeText: { fontSize: 11, fontWeight: '800', color: colors.primary },
+  itemTitle: { flex: 1, fontSize: 14, fontWeight: '700', color: colors.textPrimary },
+  removeButton: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  removeText: { color: colors.danger, fontWeight: '700', fontSize: 12 },
+  addButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    backgroundColor: colors.surface, borderWidth: 1.5, borderColor: colors.border, borderStyle: 'dashed',
+    borderRadius: radius.md, marginTop: spacing.md, height: 48,
+  },
+  addButtonText: { color: colors.primary, fontWeight: '700', fontSize: 14 },
+});

@@ -8,19 +8,22 @@ import {
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { RootStackParamList } from '../../App';
 import { StorageService } from '../storage/StorageService';
 import { Report, ReportItem } from '../types/reports';
 import { DynamicFields } from '../components/DynamicFields';
 import { ItemsList } from '../components/ItemsList';
 import { parseFieldValue } from '../utils/fieldValue';
+import { colors, radius, shadows, spacing } from '../theme';
 
 function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
   if (!visible) return null;
 
   return (
     <View style={styles.loadingOverlay}>
-      <ActivityIndicator size="large" color="#16a34a" />
+      <ActivityIndicator size="large" color={colors.success} />
       <Text style={styles.loadingText}>{message}</Text>
     </View>
   );
@@ -71,6 +74,7 @@ export function RevisaoScreen() {
 
   async function handleSave() {
     if (!report) return;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
     setSaving(true);
     try {
       const updated: Report = {
@@ -91,16 +95,33 @@ export function RevisaoScreen() {
     <SafeAreaView style={styles.safe}>
       <LoadingOverlay visible={saving} message="Salvando..." />
       <ScrollView contentContainerStyle={styles.container}>
+        <Text style={styles.eyebrow}>{report.form_template_name.toUpperCase()}</Text>
         <Text style={styles.title}>Confira os dados extraídos</Text>
-        <DynamicFields
-          fields={report.fields}
-          onChange={handleChange}
-          showEmptyMessage={!!extractionFailed}
-        />
+        <Text style={styles.subtitle}>Revise, corrija se necessário e salve o relatório.</Text>
+
+        {extractionFailed && (
+          <View style={styles.warnBanner}>
+            <Ionicons name="alert-circle" size={18} color={colors.dangerStrong} />
+            <Text style={styles.warnBannerText}>
+              Não foi possível extrair automaticamente — preencha os campos manualmente.
+            </Text>
+          </View>
+        )}
+
+        <View style={styles.card}>
+          <DynamicFields
+            fields={report.fields}
+            onChange={handleChange}
+            showEmptyMessage={false}
+          />
+        </View>
+
         {report.items && report.items.length > 0 && (
           <ItemsList items={report.items} onChange={handleItemsChange} />
         )}
-        <TouchableOpacity style={styles.button} onPress={handleSave}>
+
+        <TouchableOpacity style={styles.button} onPress={handleSave} activeOpacity={0.88}>
+          <Ionicons name="checkmark-circle" size={20} color={colors.textOnPrimary} />
           <Text style={styles.buttonText}>Salvar relatório</Text>
         </TouchableOpacity>
       </ScrollView>
@@ -109,21 +130,37 @@ export function RevisaoScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#f8fafc' },
-  container: { padding: 24, paddingBottom: 48 },
+  safe: { flex: 1, backgroundColor: colors.bg },
+  container: { padding: spacing.xxl, paddingBottom: spacing.xxxl * 1.5 },
   loadingOverlay: {
     ...StyleSheet.absoluteFill,
     zIndex: 10,
     elevation: 10,
-    backgroundColor: 'rgba(248, 250, 252, 0.9)',
+    backgroundColor: 'rgba(244, 245, 251, 0.92)',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  loadingText: { marginTop: 12, color: '#0f172a', fontSize: 16 },
-  title: { fontSize: 20, fontWeight: '700', color: '#0f172a', marginBottom: 20 },
-  button: {
-    backgroundColor: '#16a34a', paddingVertical: 16,
-    borderRadius: 12, alignItems: 'center', marginTop: 20,
+  loadingText: { marginTop: spacing.md, color: colors.textPrimary, fontSize: 16, fontWeight: '600' },
+  eyebrow: { fontSize: 11, fontWeight: '800', color: colors.primary, letterSpacing: 1.2 },
+  title: { fontSize: 22, fontWeight: '800', color: colors.textPrimary, marginTop: 4, letterSpacing: -0.3 },
+  subtitle: { fontSize: 14, color: colors.textSecondary, marginTop: 4, marginBottom: spacing.xl },
+  warnBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    backgroundColor: colors.dangerSoft, borderRadius: radius.md,
+    padding: spacing.md, marginBottom: spacing.lg,
+    borderLeftWidth: 3, borderLeftColor: colors.danger,
   },
-  buttonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+  warnBannerText: { flex: 1, fontSize: 12, fontWeight: '600', color: colors.dangerStrong },
+  card: {
+    backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.xl,
+    borderWidth: 1, borderColor: colors.border, marginBottom: spacing.lg,
+    ...shadows.sm,
+  },
+  button: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
+    backgroundColor: colors.success, paddingVertical: spacing.lg,
+    borderRadius: radius.lg, marginTop: spacing.md,
+    ...shadows.md,
+  },
+  buttonText: { color: colors.textOnPrimary, fontSize: 16, fontWeight: '700' },
 });

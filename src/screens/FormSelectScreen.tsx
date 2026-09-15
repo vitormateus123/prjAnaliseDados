@@ -7,9 +7,11 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { Ionicons } from '@expo/vector-icons';
 import { fetchFormTemplates, TemplatesFailure } from '../services/api/forms/TemplatesService';
 import { FormTemplate } from '../types/forms';
 import { RootStackParamList } from '../../App';
+import { colors, radius, shadows, spacing } from '../theme';
 
 type NavProp = NativeStackNavigationProp<RootStackParamList>;
 
@@ -62,7 +64,7 @@ export function FormSelectScreen() {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#2563eb" />
+          <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.loadingText}>Carregando formulários...</Text>
         </View>
       </SafeAreaView>
@@ -74,20 +76,26 @@ export function FormSelectScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
+        <Text style={styles.eyebrow}>ESCOLHA UM MODELO</Text>
         <Text style={styles.title}>Novo Relatório</Text>
-        <Text style={styles.subtitle}>Escolha o tipo de formulário</Text>
+        <Text style={styles.subtitle}>Selecione o tipo de formulário para começar</Text>
         {fromCache && templates.length > 0 && (
-          <Text style={styles.offlineNotice}>
-            ⚠️ Sem conexão com o servidor — mostrando a última lista salva
-          </Text>
+          <View style={styles.offlineBanner}>
+            <Ionicons name="cloud-offline-outline" size={14} color={colors.warningStrong} />
+            <Text style={styles.offlineNotice}>Sem conexão — mostrando a última lista salva</Text>
+          </View>
         )}
       </View>
 
       {templates.length === 0 ? (
         <View style={styles.centered}>
+          <View style={styles.emptyIconWrap}>
+            <Ionicons name="alert-circle-outline" size={30} color={colors.primary} />
+          </View>
           <Text style={styles.emptyTitle}>{empty.title}</Text>
           {!!empty.detail && <Text style={styles.emptyDetail}>{empty.detail}</Text>}
-          <TouchableOpacity style={styles.retryButton} onPress={() => load()} activeOpacity={0.8}>
+          <TouchableOpacity style={styles.retryButton} onPress={() => load()} activeOpacity={0.85}>
+            <Ionicons name="refresh" size={16} color={colors.textOnPrimary} />
             <Text style={styles.retryText}>Tentar de novo</Text>
           </TouchableOpacity>
         </View>
@@ -97,21 +105,25 @@ export function FormSelectScreen() {
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.list}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={() => load(true)} />
+            <RefreshControl refreshing={refreshing} onRefresh={() => load(true)} tintColor={colors.primary} />
           }
           renderItem={({ item }) => (
             <TouchableOpacity
               style={styles.card}
               onPress={() => handleSelect(item)}
-              activeOpacity={0.85}
+              activeOpacity={0.88}
             >
-              <Text style={styles.cardTitle}>{item.name}</Text>
-              {item.description && (
-                <Text style={styles.cardDesc}>{item.description}</Text>
-              )}
-              <Text style={styles.cardFields}>
-                {item.fields.length} campos
-              </Text>
+              <View style={styles.cardIconWrap}>
+                <Ionicons name={item.has_items ? 'layers-outline' : 'document-text-outline'} size={20} color={colors.primary} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardTitle}>{item.name}</Text>
+                {item.description && (
+                  <Text style={styles.cardDesc} numberOfLines={2}>{item.description}</Text>
+                )}
+                <Text style={styles.cardFields}>{item.fields.length} campos</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </TouchableOpacity>
           )}
         />
@@ -121,31 +133,43 @@ export function FormSelectScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#f8fafc' },
-  header: { padding: 24, paddingBottom: 12 },
-  title: { fontSize: 28, fontWeight: '800', color: '#0f172a' },
-  subtitle: { fontSize: 14, color: '#64748b', marginTop: 4 },
-  offlineNotice: { fontSize: 12, color: '#92400e', marginTop: 8 },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  loadingText: { marginTop: 12, fontSize: 14, color: '#64748b' },
+  safe: { flex: 1, backgroundColor: colors.bg },
+  header: { padding: spacing.xxl, paddingBottom: spacing.md },
+  eyebrow: { fontSize: 11, fontWeight: '800', color: colors.primary, letterSpacing: 1.2, marginBottom: 4 },
+  title: { fontSize: 26, fontWeight: '800', color: colors.textPrimary, letterSpacing: -0.4 },
+  subtitle: { fontSize: 14, color: colors.textSecondary, marginTop: 4, fontWeight: '500' },
+  offlineBanner: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.md, gap: 6 },
+  offlineNotice: { fontSize: 12, color: colors.warningStrong, fontWeight: '600' },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xxl },
+  loadingText: { marginTop: spacing.md, fontSize: 14, color: colors.textSecondary },
+  emptyIconWrap: {
+    width: 64, height: 64, borderRadius: 32, backgroundColor: colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center', marginBottom: spacing.lg,
+  },
   emptyTitle: {
-    fontSize: 16, fontWeight: '700', color: '#0f172a', textAlign: 'center', marginBottom: 6,
+    fontSize: 16, fontWeight: '700', color: colors.textPrimary, textAlign: 'center', marginBottom: 6,
   },
   emptyDetail: {
-    fontSize: 13, color: '#64748b', textAlign: 'center', marginBottom: 16,
+    fontSize: 13, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.lg,
   },
   retryButton: {
-    backgroundColor: '#2563eb', paddingVertical: 10, paddingHorizontal: 20, borderRadius: 10,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: colors.primary, paddingVertical: 12, paddingHorizontal: 22, borderRadius: radius.pill,
+    ...shadows.sm,
   },
-  retryText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  list: { padding: 16, gap: 12 },
+  retryText: { color: colors.textOnPrimary, fontWeight: '700', fontSize: 14 },
+  list: { padding: spacing.xxl, paddingTop: spacing.sm, gap: spacing.md },
   card: {
-    backgroundColor: '#fff', borderRadius: 14, padding: 20,
-    borderWidth: 1, borderColor: '#e2e8f0',
-    shadowColor: '#000', shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.06, shadowRadius: 4, elevation: 2,
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg,
+    borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md,
+    ...shadows.sm,
   },
-  cardTitle: { fontSize: 17, fontWeight: '700', color: '#0f172a', marginBottom: 4 },
-  cardDesc: { fontSize: 13, color: '#64748b', marginBottom: 8 },
-  cardFields: { fontSize: 12, color: '#94a3b8' },
+  cardIconWrap: {
+    width: 44, height: 44, borderRadius: radius.md, backgroundColor: colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center', marginRight: spacing.md,
+  },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: colors.textPrimary, marginBottom: 3 },
+  cardDesc: { fontSize: 13, color: colors.textSecondary, marginBottom: 6, lineHeight: 18 },
+  cardFields: { fontSize: 11, color: colors.textMuted, fontWeight: '600' },
 });

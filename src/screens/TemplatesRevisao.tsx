@@ -15,6 +15,7 @@ import {
   fetchPendingTemplates, approveTemplate, renameTemplate, mergeTemplate,
 } from '../services/api/forms/TemplatesAdminService';
 import { ApiError, NetworkError } from '../services/api/apiClient';
+import { colors, radius, shadows, spacing } from '../theme';
 
 function describeError(err: unknown): string {
   if (err instanceof ApiError) return `Erro ${err.status}: ${err.message}`;
@@ -127,7 +128,7 @@ export function TemplatesRevisaoScreen() {
     return (
       <SafeAreaView style={styles.safe}>
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color="#2563eb" />
+          <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.loadingText}>Carregando formulários pendentes...</Text>
         </View>
       </SafeAreaView>
@@ -137,6 +138,9 @@ export function TemplatesRevisaoScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
+        <Text style={{ fontSize: 11, fontWeight: '800', color: colors.primary, letterSpacing: 1.2, marginBottom: 4 }}>
+          REVISÃO DE IA
+        </Text>
         <Text style={styles.title}>Formulários pendentes</Text>
         <Text style={styles.subtitle}>
           Propostos automaticamente pela IA — revise antes que fiquem definitivos.
@@ -282,41 +286,41 @@ export function TemplatesRevisaoScreen() {
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#f8fafc' },
-  header: { padding: 24, paddingBottom: 12 },
-  title: { fontSize: 24, fontWeight: '800', color: '#0f172a' },
-  subtitle: { fontSize: 13, color: '#64748b', marginTop: 4 },
-  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-  loadingText: { marginTop: 12, fontSize: 14, color: '#64748b' },
-  emptyTitle: { fontSize: 16, fontWeight: '700', color: '#0f172a', textAlign: 'center', marginBottom: 6 },
-  emptyDetail: { fontSize: 13, color: '#64748b', textAlign: 'center' },
-  list: { padding: 16, gap: 12, paddingBottom: 32 },
+  safe: { flex: 1, backgroundColor: colors.bg },
+  header: { padding: spacing.xxl, paddingBottom: spacing.md },
+  title: { fontSize: 26, fontWeight: '800', color: colors.textPrimary, letterSpacing: -0.4 },
+  subtitle: { fontSize: 13, color: colors.textSecondary, marginTop: 4, lineHeight: 18 },
+  centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xxl },
+  loadingText: { marginTop: spacing.md, fontSize: 14, color: colors.textSecondary },
+  emptyTitle: { fontSize: 16, fontWeight: '700', color: colors.textPrimary, textAlign: 'center', marginBottom: 6 },
+  emptyDetail: { fontSize: 13, color: colors.textSecondary, textAlign: 'center' },
+  list: { padding: spacing.xxl, paddingTop: spacing.sm, gap: spacing.md, paddingBottom: spacing.xxxl },
   card: {
-    backgroundColor: '#fff', borderRadius: 14, padding: 16,
-    borderWidth: 1, borderColor: '#e2e8f0',
+    backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg,
+    borderWidth: 1, borderColor: colors.border, ...shadows.sm,
   },
   cardHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  cardTitle: { fontSize: 16, fontWeight: '700', color: '#0f172a', flexShrink: 1 },
-  cardDesc: { fontSize: 13, color: '#64748b', marginTop: 4 },
-  cardFields: { fontSize: 12, color: '#94a3b8', marginTop: 8 },
-  itemsBadge: { backgroundColor: '#e0e7ff', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 2 },
-  itemsBadgeText: { fontSize: 11, fontWeight: '700', color: '#4338ca' },
-  sectionLabel: { fontSize: 13, fontWeight: '700', color: '#334155', marginBottom: 6 },
+  cardTitle: { fontSize: 16, fontWeight: '700', color: colors.textPrimary, flexShrink: 1 },
+  cardDesc: { fontSize: 13, color: colors.textSecondary, marginTop: 4 },
+  cardFields: { fontSize: 12, color: colors.textMuted, marginTop: spacing.sm },
+  itemsBadge: { backgroundColor: colors.primarySoft, borderRadius: radius.sm, paddingHorizontal: 8, paddingVertical: 2 },
+  itemsBadgeText: { fontSize: 11, fontWeight: '700', color: colors.primaryDark },
+  sectionLabel: { fontSize: 13, fontWeight: '700', color: colors.textSecondary, marginBottom: 6 },
   input: {
-    minHeight: 44, borderRadius: 10, borderWidth: 1, borderColor: '#cbd5e1',
-    backgroundColor: '#fff', paddingHorizontal: 12, fontSize: 14, color: '#0f172a',
+    minHeight: 46, borderRadius: radius.sm, borderWidth: 1.5, borderColor: colors.border,
+    backgroundColor: colors.surfaceAlt, paddingHorizontal: spacing.md, fontSize: 14, color: colors.textPrimary,
   },
-  actionsRow: { flexDirection: 'row', marginTop: 12, gap: 8 },
+  actionsRow: { flexDirection: 'row', marginTop: spacing.md, gap: spacing.sm },
   actionButton: {
-    flex: 1, height: 44, borderRadius: 10, justifyContent: 'center', alignItems: 'center',
+    flex: 1, height: 46, borderRadius: radius.sm, justifyContent: 'center', alignItems: 'center',
   },
-  actionPrimary: { backgroundColor: '#2563eb' },
-  actionSecondary: { backgroundColor: '#e2e8f0' },
-  actionText: { fontSize: 13, fontWeight: '700', color: '#fff' },
-  actionTextSecondary: { fontSize: 13, fontWeight: '700', color: '#334155' },
+  actionPrimary: { backgroundColor: colors.primary },
+  actionSecondary: { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border },
+  actionText: { fontSize: 13, fontWeight: '700', color: colors.textOnPrimary },
+  actionTextSecondary: { fontSize: 13, fontWeight: '700', color: colors.textSecondary },
   mergeOption: {
-    backgroundColor: '#f1f5f9', borderRadius: 10, paddingVertical: 10,
-    paddingHorizontal: 12, marginBottom: 6,
+    backgroundColor: colors.surfaceAlt, borderRadius: radius.sm, paddingVertical: 10,
+    paddingHorizontal: spacing.md, marginBottom: 6, borderWidth: 1, borderColor: colors.border,
   },
-  mergeOptionText: { fontSize: 14, fontWeight: '600', color: '#0f172a' },
+  mergeOptionText: { fontSize: 14, fontWeight: '600', color: colors.textPrimary },
 });

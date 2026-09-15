@@ -1,9 +1,15 @@
-import { useEffect, useState } from 'react';
-import { View, Text, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import {
+  View, Text, TouchableOpacity, Alert, ActivityIndicator,
+  StyleSheet, Animated, Easing, SafeAreaView,
+} from 'react-native';
 import { useNavigation, useRoute, NavigationProp, RouteProp } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import NetInfo from '@react-native-community/netinfo';
 import * as Crypto from 'expo-crypto';
+import { LinearGradient } from 'expo-linear-gradient';
+import * as Haptics from 'expo-haptics';
+import { Ionicons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../App';
 import { extractFields } from '../services/api/ai/ExtractionService';
 import { autoExtractFields } from '../services/api/ai/AutoExtractionService';
@@ -13,7 +19,8 @@ import { fetchFormTemplateById } from '../services/api/forms/TemplatesService';
 import { FormTemplate } from '../types/forms';
 import { Capture, Report } from '../types/reports';
 import { buildReportFields, buildReportItems, emptyReportItem } from '../utils/reportBuilder';
-import { styles } from '../styles';
+import { styles as shared } from '../styles';
+import { colors, gradients, radius, shadows, spacing } from '../theme';
 
 // Fase 3: a tela agora funciona em dois modos.
 // - Auto (padrão, sem formTemplateId): o app manda só a mídia pra
@@ -31,6 +38,28 @@ export default function CapturaScreen() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const audio = useAudioCapture();
+
+  // Pulso suave ao redor do botão de gravação enquanto o áudio está ativo —
+  // dá feedback visual claro de "estou ouvindo" sem precisar de libs extras.
+  const pulse = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!audio.isRecording) {
+      pulse.stopAnimation();
+      pulse.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulse, { toValue: 1, duration: 1100, easing: Easing.out(Easing.ease), useNativeDriver: true }),
+        Animated.timing(pulse, { toValue: 0, duration: 0, useNativeDriver: true }),
+      ]),
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [audio.isRecording, pulse]);
+
+  const pulseScale = pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.55] });
+  const pulseOpacity = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.35, 0] });
 
   useEffect(() => {
     if (!formTemplateId) return;
@@ -201,6 +230,7 @@ export default function CapturaScreen() {
   }
 
   async function handleToggleRecording() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     if (audio.isRecording) {
       const uri = await audio.stopRecording();
       if (uri) {
@@ -217,6 +247,7 @@ export default function CapturaScreen() {
   }
 
   async function handlePhotoCapture() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
       setError('Permissão de câmera negada.');
@@ -236,79 +267,155 @@ export default function CapturaScreen() {
 
   if (loadingTemplate) {
     return (
-      <View style={styles.container}>
-        <ActivityIndicator size="large" color="#2563eb" />
-        <Text style={styles.loadingText}>Carregando formulário...</Text>
+      <View style={shared.container}>
+        <ActivityIndicator size="large" color={colors.primary} />
+        <Text style={shared.loadingText}>Carregando formulário...</Text>
       </View>
     );
   }
 
   if (!isAutoMode && !template) {
     return (
-      <View style={styles.container}>
-        <Text style={styles.loadingText}>Formulário não encontrado.</Text>
+      <View style={shared.container}>
+        <Text style={shared.loadingText}>Formulário não encontrado.</Text>
       </View>
     );
   }
 
+  const recording = audio.isRecording;
+
   return (
-    <View style={styles.containerWithPadding}>
-      <View style={styles.header}>
-        <Text style={styles.title}>{isAutoMode ? 'Nova captura' : template!.name}</Text>
-        <Text style={styles.subtitle}>
-          {isAutoMode
-            ? 'Grave por voz ou tire uma foto — a IA identifica o formulário certo'
-            : 'Grave por voz ou tire uma foto para começar'}
-        </Text>
-      </View>
-
-      {error && (
-        <View style={styles.errorBox}>
-          <Text style={styles.errorText}>{error}</Text>
-        </View>
-      )}
-
-      <TouchableOpacity
-        style={[styles.button, styles.buttonPrimary]}
-        onPress={handleToggleRecording}
-        disabled={isProcessing}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.buttonText}>
-          {isProcessing
-            ? 'Processando...'
-            : audio.isRecording
-            ? '⏹ Parar gravação'
-            : '🎤 Gravar por voz'}
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[styles.button, styles.buttonPrimary]}
-        onPress={handlePhotoCapture}
-        disabled={isProcessing || audio.isRecording}
-        activeOpacity={0.8}
-      >
-        <Text style={styles.buttonText}>
-          {isProcessing ? 'Processando...' : '📷 Tirar foto'}
-        </Text>
-      </TouchableOpacity>
-
-      {isProcessing && (
-        <View style={styles.loading}>
-          <Text style={styles.loadingText}>
-            {isAutoMode ? 'Identificando formulário e extraindo...' : 'Processando extração...'}
+    <SafeAreaView style={local.safe}>
+      <View style={local.content}>
+        <View style={local.header}>
+          <Text style={local.eyebrow}>{isAutoMode ? 'Captura inteligente' : template!.name.toUpperCase()}</Text>
+          <Text style={shared.title}>{isAutoMode ? 'Nova captura' : template!.name}</Text>
+          <Text style={shared.subtitle}>
+            {isAutoMode
+              ? 'Grave por voz ou tire uma foto — a IA identifica o formulário certo'
+              : 'Grave por voz ou tire uma foto para começar'}
           </Text>
         </View>
-      )}
 
-      {isAutoMode && !isProcessing && (
-        <TouchableOpacity onPress={() => navigation.navigate('FormSelect')} activeOpacity={0.7}>
-          <Text style={{ textAlign: 'center', color: '#2563eb', marginTop: 8, fontSize: 13 }}>
-            Prefere escolher o formulário manualmente?
+        {error && (
+          <View style={shared.errorBox}>
+            <Text style={shared.errorText}>{error}</Text>
+          </View>
+        )}
+
+        <View style={local.stage}>
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              local.pulseRing,
+              { transform: [{ scale: pulseScale }], opacity: pulseOpacity },
+            ]}
+          />
+          <TouchableOpacity
+            onPress={handleToggleRecording}
+            disabled={isProcessing}
+            activeOpacity={0.85}
+            style={local.recordTouchable}
+          >
+            <LinearGradient
+              colors={recording ? ['#f87171', '#dc2626'] : gradients.primaryHero}
+              start={{ x: 0.1, y: 0 }}
+              end={{ x: 0.9, y: 1 }}
+              style={[local.recordButton, isProcessing && local.recordButtonDisabled]}
+            >
+              {isProcessing ? (
+                <ActivityIndicator size="large" color={colors.textOnPrimary} />
+              ) : (
+                <Ionicons name={recording ? 'stop' : 'mic'} size={44} color={colors.textOnPrimary} />
+              )}
+            </LinearGradient>
+          </TouchableOpacity>
+          <Text style={local.stageLabel}>
+            {isProcessing
+              ? 'Processando...'
+              : recording
+              ? 'Toque para parar'
+              : 'Toque para gravar'}
           </Text>
+        </View>
+
+        <TouchableOpacity
+          style={local.photoButton}
+          onPress={handlePhotoCapture}
+          disabled={isProcessing || recording}
+          activeOpacity={0.85}
+        >
+          <View style={local.photoIconWrap}>
+            <Ionicons name="camera" size={20} color={colors.primary} />
+          </View>
+          <Text style={local.photoButtonText}>
+            {isProcessing ? 'Processando...' : 'Tirar foto'}
+          </Text>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
         </TouchableOpacity>
-      )}
-    </View>
+
+        {isProcessing && (
+          <View style={shared.loading}>
+            <Text style={shared.loadingText}>
+              {isAutoMode ? 'Identificando formulário e extraindo...' : 'Processando extração...'}
+            </Text>
+          </View>
+        )}
+
+        {isAutoMode && !isProcessing && (
+          <TouchableOpacity
+            onPress={() => navigation.navigate('FormSelect')}
+            activeOpacity={0.7}
+            style={local.manualLink}
+          >
+            <Text style={local.manualLinkText}>Prefere escolher o formulário manualmente?</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+    </SafeAreaView>
   );
 }
+
+const local = StyleSheet.create({
+  safe: { flex: 1, backgroundColor: colors.bg },
+  content: { flex: 1, padding: spacing.xxl, justifyContent: 'center' },
+  header: { marginBottom: spacing.xxl },
+  eyebrow: {
+    fontSize: 12, fontWeight: '800', color: colors.primary,
+    letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 6,
+  },
+  stage: { alignItems: 'center', justifyContent: 'center', marginBottom: spacing.xxxl },
+  recordTouchable: { alignItems: 'center', justifyContent: 'center' },
+  pulseRing: {
+    position: 'absolute',
+    width: 168, height: 168, borderRadius: 84,
+    backgroundColor: colors.primary,
+  },
+  recordButton: {
+    width: 168, height: 168, borderRadius: 84,
+    alignItems: 'center', justifyContent: 'center',
+    ...shadows.lg,
+  },
+  recordButtonDisabled: { opacity: 0.75 },
+  stageLabel: {
+    marginTop: spacing.lg,
+    fontSize: 14, fontWeight: '700', color: colors.textSecondary,
+  },
+  photoButton: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1.5, borderColor: colors.border,
+    paddingVertical: spacing.lg, paddingHorizontal: spacing.xl,
+    ...shadows.sm,
+  },
+  photoIconWrap: {
+    width: 38, height: 38, borderRadius: radius.md,
+    backgroundColor: colors.primaryLight,
+    alignItems: 'center', justifyContent: 'center',
+    marginRight: spacing.md,
+  },
+  photoButtonText: { flex: 1, fontSize: 15, fontWeight: '700', color: colors.textPrimary },
+  manualLink: { marginTop: spacing.xl, alignItems: 'center' },
+  manualLinkText: { fontSize: 13, fontWeight: '600', color: colors.primary },
+});
