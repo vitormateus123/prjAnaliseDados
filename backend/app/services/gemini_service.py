@@ -1,7 +1,9 @@
 # backend/app/services/gemini_service.py
+import asyncio
 import json
 from google import genai
 from google.genai import types
+from google.genai import errors as genai_errors
 from app.core.config import settings
 from app.schemas.extraction import (
     ExtractedField,
@@ -21,7 +23,37 @@ PROVIDER = "gemini"
 
 
 class ExtractionError(Exception):
-    """Falha ao obter uma resposta utilizável do modelo."""
+    """Falha ao obter uma resposta utilizável do modelo.
+
+    `retryable=True` sinaliza pro chamador (extract.py, e depois o app) que
+    vale a pena tentar de novo em vez de cair direto pro preenchimento
+    manual — hoje só usado pra sobrecarga momentânea do Gemini (503)."""
+
+    def __init__(self, message: str, *, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+# Sobrecarga momentânea (503 UNAVAILABLE) costuma passar em segundos — o SDK
+# já tenta de novo sozinho, mas desiste rápido demais pra picos curtos de
+# demanda. Duas tentativas extras com um respiro maior a cada uma.
+_TRANSIENT_RETRY_DELAYS = (2, 5)
+
+
+async def _generate_with_retry(**kwargs):
+    last_err: genai_errors.ServerError | None = None
+    for delay in (0, *_TRANSIENT_RETRY_DELAYS):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            return await _client.aio.models.generate_content(**kwargs)
+        except genai_errors.ServerError as err:
+            last_err = err
+            continue
+    raise ExtractionError(
+        "O serviço de IA está sobrecarregado no momento. Tente novamente em alguns instantes.",
+        retryable=True,
+    ) from last_err
 
 
 # ─── extração clássica (template já escolhido, sem itens) ─────────────────
@@ -89,7 +121,7 @@ async def extract_from_media(
     fields: list[FieldHint], media_bytes: bytes, mime_type: str,
 ) -> list[ExtractedField]:
     prompt = PROMPT_TEMPLATE.format(fields_spec=_build_fields_spec(fields))
-    response = await _client.aio.models.generate_content(
+    response = await _generate_with_retry(
         model=MODEL,
         contents=[prompt, types.Part.from_bytes(data=media_bytes, mime_type=mime_type)],
         config=types.GenerateContentConfig(
@@ -104,7 +136,7 @@ async def extract_from_text(fields: list[FieldHint], text: str) -> list[Extracte
         PROMPT_TEMPLATE.format(fields_spec=_build_fields_spec(fields))
         + f"\n\nTEXTO TRANSCRITO (fala do usuário):\n{text}"
     )
-    response = await _client.aio.models.generate_content(
+    response = await _generate_with_retry(
         model=MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -214,7 +246,7 @@ async def classify_or_propose(
     else:
         raise ValueError("Forneça text ou media_bytes.")
 
-    response = await _client.aio.models.generate_content(
+    response = await _generate_with_retry(
         model=MODEL,
         contents=contents,
         config=types.GenerateContentConfig(
@@ -325,7 +357,7 @@ async def extract_for_template(
     else:
         raise ValueError("Forneça text ou media_bytes.")
 
-    response = await _client.aio.models.generate_content(
+    response = await _generate_with_retry(
         model=MODEL,
         contents=contents,
         config=types.GenerateContentConfig(

@@ -9,6 +9,7 @@ from app.schemas.extraction import (
 )
 from app.schemas.forms import FormFieldOut, FormTemplateOut
 from app.services import gemini_service, groq_service
+from app.services.gemini_service import ExtractionError
 from app.services.supabase_service import get_client
 
 logger = logging.getLogger("extract")
@@ -61,12 +62,19 @@ async def extract_fields(
             t1 = time.monotonic()
             print(f"[extract] Gemini (extração multimodal) levou {t1 - t0:.1f}s", flush=True)
             model = gemini_service.MODEL
+    except ExtractionError as e:
+        print(f"[extract] FALHOU ({'retryable' if e.retryable else 'não-retryable'}): {e}", flush=True)
+        logger.warning("Extração falhou (%s): %s", media_type, e)
+        return ExtractResponse(
+            success=False, fields=[], provider="gemini",
+            model=gemini_service.MODEL, error=str(e), retryable=e.retryable,
+        )
     except Exception as e:
         print(f"[extract] FALHOU: {type(e).__name__}: {e}", flush=True)
         logger.exception("Falha na extração (%s)", media_type)
         return ExtractResponse(
-            success=False, fields=[], provider="gemini",
-            model=gemini_service.MODEL, error=str(e),
+            success=False, fields=[], provider="gemini", model=gemini_service.MODEL,
+            error="Falha inesperada ao processar a captura. Tente novamente.",
         )
 
     return ExtractResponse(
@@ -268,10 +276,18 @@ async def extract_auto(
         )
     except HTTPException:
         raise
+    except ExtractionError as e:
+        logger.warning("Extração automática falhou (%s): %s", media_type, e)
+        return AutoExtractResponse(
+            success=False, template_id="", template_name="", template_is_new=False,
+            has_items=False, fields=[], items=[], provider="gemini",
+            model=gemini_service.MODEL, error=str(e), retryable=e.retryable,
+        )
     except Exception as e:
         logger.exception("Falha na extração automática (%s)", media_type)
         return AutoExtractResponse(
             success=False, template_id="", template_name="", template_is_new=False,
             has_items=False, fields=[], items=[], provider="gemini",
-            model=gemini_service.MODEL, error=str(e),
+            model=gemini_service.MODEL,
+            error="Falha inesperada ao processar a captura. Tente novamente.",
         )

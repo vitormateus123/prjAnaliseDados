@@ -30,6 +30,9 @@ class ExtractResponse(BaseModel):
     provider: str
     model: str
     error: str | None = None
+    # true = vale a pena chamar de novo (ex: sobrecarga momentânea do
+    # provedor de IA); false = erro que tentar de novo não resolve sozinho.
+    retryable: bool = False
 
 
 # ─── catálogo enviado à IA para classificação ──────────────────────────────
@@ -95,3 +98,4 @@ class AutoExtractResponse(BaseModel):
     provider: str
     model: str
     error: str | None = None
+    retryable: bool = False

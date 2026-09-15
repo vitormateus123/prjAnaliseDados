@@ -41,6 +41,7 @@ export async function autoExtractFields(
       fields: [],
       items: [],
       error: error instanceof Error ? error.message : 'Erro desconhecido',
+      retryable: true,
     };
   }
 }

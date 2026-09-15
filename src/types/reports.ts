@@ -42,6 +42,8 @@ export interface ExtractionResult {
     confidence: number;
   }>;
   error?: string;
+  // true = vale a pena chamar de novo (ex: sobrecarga momentânea da IA)
+  retryable?: boolean;
   provider?: string;
   model?: string;
 }
@@ -68,6 +70,10 @@ export interface AutoExtractionResult {
   fields: AutoExtractedField[];
   items: AutoExtractedItem[];
   error?: string;
+  // true = vale a pena chamar /extract/auto de novo com a mesma mídia
+  // (ex: sobrecarga momentânea da IA); false = tentar de novo sozinho
+  // não resolve (ex: mídia ilegível).
+  retryable?: boolean;
   provider?: string;
   model?: string;
 }

@@ -166,10 +166,12 @@ export default function CapturaScreen() {
     if (!auto.success || !auto.template_id) {
       Alert.alert(
         'Não foi possível identificar o formulário',
-        `Detalhe: ${auto.error ?? 'motivo desconhecido'}\n\nVocê pode tentar de novo ou escolher o formulário manualmente.`,
+        `Detalhe: ${auto.error ?? 'motivo desconhecido'}`,
         [
-          { text: 'Tentar de novo', style: 'cancel' },
           { text: 'Escolher manualmente', onPress: () => navigation.navigate('FormSelect') },
+          // Reprocessa a mesma mídia já capturada — nada foi salvo/navegado
+          // ainda nesse ponto, então tentar de novo aqui é seguro.
+          { text: 'Tentar de novo', onPress: () => processCapture(mediaUri, mediaType, mimeType) },
         ],
       );
       return;
