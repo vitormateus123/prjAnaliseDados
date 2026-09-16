@@ -76,6 +76,11 @@ class ClassificationResult(BaseModel):
     match: str  # 'existing' | 'new'
     template_id: str | None = None
     new_template: ProposedTemplate | None = None
+    # Só relevante quando match='existing': campos que a IA identificou como
+    # essenciais para o conteúdo capturado, mas que o template escolhido
+    # ainda não tem (ex: nota fiscal sem "emissor"). Mesmo formato dos campos
+    # de new_template — extract.py os grava no template antes de extrair.
+    suggested_fields: list[ProposedField] = []
 
 
 # ─── resposta do endpoint /extract/auto ────────────────────────────────────
@@ -99,3 +104,10 @@ class AutoExtractResponse(BaseModel):
     model: str
     error: str | None = None
     retryable: bool = False
+    # Keys dos campos que a IA acabou de adicionar a um template EXISTENTE
+    # (ver ClassificationResult.suggested_fields) — vazio quando
+    # template_is_new=True (nesse caso o template inteiro já é novo) ou
+    # quando o template escolhido já cobria bem o conteúdo. O app usa isso
+    # só pra avisar o usuário; os campos já vêm completos ao buscar o
+    # template por fetchFormTemplateById logo em seguida.
+    new_field_keys: list[str] = []

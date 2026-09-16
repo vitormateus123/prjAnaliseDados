@@ -10,7 +10,8 @@
       "supportsTablet": true,
       "infoPlist": {
         "NSMicrophoneUsageDescription": "O app precisa do microfone para gravar relatos por voz.",
-        "NSCameraUsageDescription": "O app precisa da câmera para fotografar documentos e itens em campo."
+        "NSCameraUsageDescription": "O app precisa da câmera para fotografar documentos e itens em campo.",
+        "NSPhotoLibraryUsageDescription": "O app precisa acessar suas fotos para permitir o envio de imagens já existentes."
       }
     },
     "android": {
@@ -22,7 +23,8 @@
       },
       "permissions": [
         "android.permission.RECORD_AUDIO",
-        "android.permission.CAMERA"
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES"
       ],
       "predictiveBackGestureEnabled": false
     },

@@ -5,7 +5,7 @@ import time
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from app.schemas.extraction import (
     ExtractResponse, FieldHint, AutoExtractResponse,
-    TemplateCatalogEntry, TemplateCatalogField,
+    TemplateCatalogEntry, TemplateCatalogField, ProposedField,
 )
 from app.schemas.forms import FormFieldOut, FormTemplateOut
 from app.services import gemini_service, groq_service
@@ -158,6 +158,7 @@ def _create_dynamic_template(proposed) -> FormTemplateOut:
             "extraction_hint": f.extraction_hint,
             "options": f.options,
             "is_item_field": f.is_item_field,
+            "source": "ai_generated",
         }
         for i, f in enumerate(proposed.fields)
     ]
@@ -171,6 +172,7 @@ def _create_dynamic_template(proposed) -> FormTemplateOut:
                     required=f["required"], position=f["position"],
                     extraction_hint=f.get("extraction_hint"), options=f.get("options"),
                     is_item_field=f.get("is_item_field", False),
+                    source=f.get("source", "ai_generated"),
                 )
             )
 
@@ -180,6 +182,50 @@ def _create_dynamic_template(proposed) -> FormTemplateOut:
         active=template_row["active"], has_items=template_row.get("has_items", False),
         fields=fields_out,
     )
+
+
+def _persist_suggested_fields(
+    template_id: str,
+    existing_fields: list[TemplateCatalogField],
+    suggested_fields: list[ProposedField],
+) -> list[str]:
+    """Grava em form_fields os campos que a IA apontou como faltantes num
+    template EXISTENTE (ver ClassificationResult.suggested_fields), com
+    source='ai_generated' pra aparecer sinalizado em Gerenciar Formulários —
+    onde já dá pra remover (DELETE /templates/{id}/fields/{field_id}) se não
+    fizer sentido. Devolve as keys realmente inseridas (vazio se nada novo)."""
+    existing_keys = {f.key for f in existing_fields}
+    new_specs = [f for f in suggested_fields if f.key not in existing_keys]
+    if not new_specs:
+        return []
+
+    supabase = get_client()
+    start_position = len(existing_fields)
+    field_rows = [
+        {
+            "form_template_id": template_id,
+            "key": f.key,
+            "label": f.label,
+            "type": f.type,
+            "required": False,
+            "position": start_position + i,
+            "extraction_hint": f.extraction_hint,
+            "options": f.options,
+            "is_item_field": f.is_item_field,
+            "source": "ai_generated",
+        }
+        for i, f in enumerate(new_specs)
+    ]
+    fields_resp = supabase.table("form_fields").insert(field_rows).execute()
+    if not fields_resp.data:
+        # Mais provável: colisão de key com algo inserido entre o carregamento
+        # do catálogo e agora. Não vale falhar a extração inteira por isso —
+        # só loga e segue sem os campos novos.
+        logger.warning(
+            "Falha ao gravar campos sugeridos pela IA no template %s", template_id
+        )
+        return []
+    return [f["key"] for f in fields_resp.data]
 
 
 def _catalog_entry_to_template_out(entry: TemplateCatalogEntry) -> FormTemplateOut:
@@ -226,6 +272,7 @@ async def extract_auto(
         )
 
         template_is_new = classification.match == "new"
+        new_field_keys: list[str] = []
         if template_is_new:
             if not classification.new_template:
                 raise HTTPException(
@@ -244,6 +291,25 @@ async def extract_auto(
                     ),
                 )
             template = _catalog_entry_to_template_out(entry)
+
+            # Template já existia, mas a IA pode ter percebido que falta algo
+            # essencial pro conteúdo específico desta captura (ex: nota
+            # fiscal sem "emissor"/"destinatário"). Grava esses campos no
+            # template e já inclui no `fields` usado pra extração abaixo —
+            # assim eles saem preenchidos na mesma passada, sem chamada extra.
+            new_field_keys = _persist_suggested_fields(
+                entry.id, entry.fields, classification.suggested_fields,
+            )
+            if new_field_keys:
+                added = [f for f in classification.suggested_fields if f.key in new_field_keys]
+                template.fields.extend([
+                    FormFieldOut(
+                        id="", key=f.key, label=f.label, type=f.type, required=False,
+                        position=len(template.fields) + i, extraction_hint=f.extraction_hint,
+                        options=f.options, is_item_field=f.is_item_field, source="ai_generated",
+                    )
+                    for i, f in enumerate(added)
+                ])
 
         fields = [
             FieldHint(
@@ -271,6 +337,7 @@ async def extract_auto(
             items=items,
             provider="gemini",
             model=model,
+            new_field_keys=new_field_keys,
             # devolve o template completo via header seria estranho — o app
             # busca com GET /templates/{id} logo em seguida (já tem cache).
         )

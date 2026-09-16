@@ -23,6 +23,10 @@ class FormFieldOut(BaseModel):
     validation_rules: ValidationRules | None = None
     # true = este campo se repete por item quando o template tem has_items=True
     is_item_field: bool = False
+    # 'manual' = criado por um humano; 'ai_generated' = a IA adicionou este
+    # campo (seja num template todo novo, seja preenchendo uma lacuna num
+    # template existente em /extract/auto — ver ClassificationResult.suggested_fields).
+    source: str = "manual"
 
 
 class FormTemplateOut(BaseModel):

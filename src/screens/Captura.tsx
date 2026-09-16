@@ -197,6 +197,15 @@ export default function CapturaScreen() {
         'Novo tipo de formulário identificado',
         `A IA criou o formulário "${resolvedTemplate.name}" para este tipo de conteúdo. Ele já pode ser usado, mas ainda não foi revisado — confira em Ajustes > Revisar formulários.`,
       );
+    } else if (auto.new_field_keys && auto.new_field_keys.length > 0) {
+      const addedLabels = resolvedTemplate.fields
+        .filter((f) => auto.new_field_keys!.includes(f.key))
+        .map((f) => f.label)
+        .join(', ');
+      Alert.alert(
+        'Novos campos identificados',
+        `A IA percebeu que "${resolvedTemplate.name}" estava sem: ${addedLabels}. Eles foram adicionados ao formulário — remova em Ajustes > Gerenciar formulários se não fizerem sentido.`,
+      );
     }
 
     await persistReport(resolvedTemplate, capture, flatFields, items, false);
@@ -248,8 +257,7 @@ export default function CapturaScreen() {
     }
   }
 
-  async function handlePhotoCapture() {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+  async function pickFromCamera() {
     const permission = await ImagePicker.requestCameraPermissionsAsync();
     if (!permission.granted) {
       setError('Permissão de câmera negada.');
@@ -265,6 +273,33 @@ export default function CapturaScreen() {
 
     const asset = result.assets[0];
     await processCapture(asset.uri, 'photo', asset.mimeType ?? 'image/jpeg');
+  }
+
+  async function pickFromLibrary() {
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      setError('Permissão para acessar fotos negada.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.7,
+    });
+
+    if (result.canceled || !result.assets?.[0]) return;
+
+    const asset = result.assets[0];
+    await processCapture(asset.uri, 'photo', asset.mimeType ?? 'image/jpeg');
+  }
+
+  function handlePhotoCapture() {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    Alert.alert('Adicionar foto', undefined, [
+      { text: 'Tirar foto', onPress: () => { pickFromCamera(); } },
+      { text: 'Escolher da galeria', onPress: () => { pickFromLibrary(); } },
+      { text: 'Cancelar', style: 'cancel' },
+    ]);
   }
 
   if (loadingTemplate) {
@@ -351,7 +386,7 @@ export default function CapturaScreen() {
             <Ionicons name="camera" size={20} color={colors.primary} />
           </View>
           <Text style={local.photoButtonText}>
-            {isProcessing ? 'Processando...' : 'Tirar foto'}
+            {isProcessing ? 'Processando...' : 'Adicionar foto'}
           </Text>
           <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
         </TouchableOpacity>

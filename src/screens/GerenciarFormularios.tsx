@@ -307,6 +307,7 @@ export function GerenciarFormulariosScreen() {
                     <Text style={styles.fieldMeta}>
                       {field.key} · {FIELD_TYPES.find((t) => t.value === field.type)?.label ?? field.type}
                       {field.required ? ' · obrigatório' : ''}
+                      {field.source === 'ai_generated' ? ' · sugerido pela IA' : ''}
                     </Text>
                   </View>
                   <TouchableOpacity style={styles.iconButton} onPress={() => startEditingField(item.id, field)}>

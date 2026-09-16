@@ -28,6 +28,10 @@ export interface FormField {
   // true = este campo se repete por item quando o template tem has_items=true
   // (ex: 'produto', 'quantidade'); false = campo único do relatório (ex: 'local').
   is_item_field?: boolean;
+  // 'ai_generated' = a IA adicionou este campo (template novo, ou lacuna
+  // preenchida num template existente em /extract/auto) — mesmo significado
+  // de TemplateSource, reaproveitado por campo.
+  source?: TemplateSource;
 }
 
 export type TemplateSource = 'manual' | 'ai_generated';

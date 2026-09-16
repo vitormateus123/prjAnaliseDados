@@ -67,6 +67,9 @@ REGRAS:
 - Extraia apenas informações presentes no conteúdo.
 - Nunca invente informações.
 - Para campos não encontrados, retorne string vazia "".
+- Nunca preencha um campo com um valor que pertence a outro conceito só para
+  não deixá-lo vazio (ex: um campo "Órgão Emissor" não é o mesmo que o
+  município de tributação de uma nota fiscal) — nesse caso, retorne "".
 - Retorne APENAS o JSON pedido, sem texto adicional.
 - Para campos de data, use o formato YYYY-MM-DD.
 - Para campos de seleção, retorne exatamente uma das opções fornecidas.
@@ -155,6 +158,21 @@ TEMPLATES DISPONÍVEIS:
 
 Se um dos templates acima descrever bem o conteúdo, responda "existing" com o id dele.
 
+Quando responder "existing", avalie também se os campos ATUAIS desse template
+capturam tudo que é essencial no conteúdo. Templates são um ponto de partida,
+não uma lista fechada — se faltar algo essencial (ex: um template "Documento"
+com só numero_documento/data, mas o conteúdo é uma nota fiscal que também
+mostra claramente o prestador, o tomador, a chave de acesso e o valor total),
+liste os campos faltantes em suggested_fields, no mesmo formato dos campos de
+new_template. Eles serão adicionados ao template permanentemente, então:
+- só inclua campos que sejam claramente essenciais e estejam de fato
+  ausentes (nunca repita uma key que o template já tem);
+- prefira campos numéricos/decimais para valores monetários que estejam
+  claramente discriminados (ex: valor total, valor de um imposto) em vez de
+  deixá-los soltos apenas dentro de um campo de observações;
+- no máximo 8 campos por vez — mesmo limite de new_template.fields;
+- se o template já cobre bem o conteúdo, deixe suggested_fields vazio.
+
 Se NENHUM template existente descrever bem o conteúdo, responda "new" e proponha um template:
 - name: nome curto do tipo de formulário (ex: "Registro de Manutenção")
 - description: uma frase explicando o tipo de coleta
@@ -188,6 +206,28 @@ def _build_templates_spec(catalog: list[TemplateCatalogEntry]) -> str:
     return "\n".join(lines)
 
 
+# Compartilhado entre new_template.fields e suggested_fields — os dois
+# descrevem "um campo que a IA está propondo criar", só muda o contexto
+# (template todo novo vs. lacuna num template existente).
+_PROPOSED_FIELD_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "key": {"type": "STRING"},
+        "label": {"type": "STRING"},
+        "type": {
+            "type": "STRING",
+            "enum": [
+                "text", "long_text", "number", "decimal",
+                "date", "boolean", "select", "multiselect",
+            ],
+        },
+        "extraction_hint": {"type": "STRING"},
+        "options": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "is_item_field": {"type": "BOOLEAN"},
+    },
+    "required": ["key", "label", "type", "is_item_field"],
+}
+
 _CLASSIFY_SCHEMA = {
     "type": "OBJECT",
     "properties": {
@@ -199,30 +239,12 @@ _CLASSIFY_SCHEMA = {
                 "name": {"type": "STRING"},
                 "description": {"type": "STRING"},
                 "has_items": {"type": "BOOLEAN"},
-                "fields": {
-                    "type": "ARRAY",
-                    "items": {
-                        "type": "OBJECT",
-                        "properties": {
-                            "key": {"type": "STRING"},
-                            "label": {"type": "STRING"},
-                            "type": {
-                                "type": "STRING",
-                                "enum": [
-                                    "text", "long_text", "number", "decimal",
-                                    "date", "boolean", "select", "multiselect",
-                                ],
-                            },
-                            "extraction_hint": {"type": "STRING"},
-                            "options": {"type": "ARRAY", "items": {"type": "STRING"}},
-                            "is_item_field": {"type": "BOOLEAN"},
-                        },
-                        "required": ["key", "label", "type", "is_item_field"],
-                    },
-                },
+                "fields": {"type": "ARRAY", "items": _PROPOSED_FIELD_SCHEMA},
             },
             "required": ["name", "has_items", "fields"],
         },
+        # Só preenchido quando match='existing' — ver comentário no prompt.
+        "suggested_fields": {"type": "ARRAY", "items": _PROPOSED_FIELD_SCHEMA},
     },
     "required": ["match"],
 }
@@ -276,6 +298,8 @@ REGRAS:
 - Identifique quantos itens distintos existem no conteúdo (ex: conte cada produto visível na foto).
 - Extraia os campos por item para CADA item encontrado — não agrupe itens diferentes numa linha só.
 - Para campos não encontrados, retorne string vazia "".
+- Nunca preencha um campo com um valor que pertence a outro conceito só para
+  não deixá-lo vazio — nesse caso, retorne "".
 - Retorne APENAS o JSON pedido, sem texto adicional.
 
 Retorne um JSON com esta estrutura exata:

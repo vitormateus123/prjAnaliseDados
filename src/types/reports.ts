@@ -76,6 +76,11 @@ export interface AutoExtractionResult {
   retryable?: boolean;
   provider?: string;
   model?: string;
+  // Keys dos campos que a IA acabou de adicionar a um template EXISTENTE
+  // porque percebeu que faltava algo essencial pro conteúdo capturado (ex:
+  // nota fiscal sem "emissor"). Vazio quando template_is_new=true ou quando
+  // o template escolhido já cobria bem o conteúdo.
+  new_field_keys?: string[];
 }
 
 // Um item dentro de um relatório com has_items=true (ex: cada produto
