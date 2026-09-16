@@ -58,7 +58,7 @@ async def _generate_with_retry(**kwargs):
 
 # ─── extração clássica (template já escolhido, sem itens) ─────────────────
 
-PROMPT_TEMPLATE = """Você é um assistente que extrai informações estruturadas de relatos de trabalhadores de campo (voz ou foto).
+PROMPT_TEMPLATE = """Você é um assistente que extrai informações estruturadas de relatos de trabalhadores de campo. O conteúdo pode combinar mais de uma fonte na mesma captura — uma ou mais fotos, e/ou um texto (transcrito de fala ou digitado) — use todas as fontes fornecidas em conjunto para preencher os campos.
 
 CAMPOS PARA EXTRAIR:
 {fields_spec}
@@ -73,9 +73,12 @@ REGRAS:
 - Retorne APENAS o JSON pedido, sem texto adicional.
 - Para campos de data, use o formato YYYY-MM-DD.
 - Para campos de seleção, retorne exatamente uma das opções fornecidas.
+- Para cada campo preenchido, informe em "source" de qual fonte o valor veio
+  predominantemente: "image" (de uma foto), "audio" (de fala transcrita) ou
+  "text" (de texto digitado). Se o campo ficou vazio, use "" mesmo assim.
 
 Retorne um JSON com esta estrutura exata:
-{{"fields": [{{"key": "chave_do_campo", "value": "valor_extraído", "confidence": 0.95}}]}}
+{{"fields": [{{"key": "chave_do_campo", "value": "valor_extraído", "confidence": 0.95, "source": "image"}}]}}
 """
 
 
@@ -85,6 +88,38 @@ def _build_fields_spec(fields: list[FieldHint]) -> str:
         hint = f.extraction_hint or f"Extraia o valor para: {f.label}"
         lines.append(f"- {f.key} ({f.type}): {hint}")
     return "\n".join(lines)
+
+
+# label interno -> como aparece no prompt, pra deixar claro pro modelo qual
+# texto veio de onde (isso é o que permite ele responder "source": "audio"
+# vs "text" com alguma confiança).
+_TEXT_SOURCE_LABELS = {
+    "audio": "TEXTO TRANSCRITO DE ÁUDIO (fala do usuário)",
+    "text": "TEXTO DIGITADO PELO USUÁRIO",
+}
+
+
+def _build_text_block(texts: list[tuple[str, str]]) -> str:
+    blocks = []
+    for source, content in texts:
+        if not content or not content.strip():
+            continue
+        label = _TEXT_SOURCE_LABELS.get(source, source.upper())
+        blocks.append(f"\n\n{label}:\n{content.strip()}")
+    return "".join(blocks)
+
+
+def _build_contents(prompt: str, texts: list[tuple[str, str]], images: list[tuple[bytes, str]]):
+    """Monta `contents` pro Gemini a partir de uma combinação de textos
+    (áudio transcrito e/ou texto digitado) e imagens (uma ou mais fotos).
+    Sempre inclui pelo menos o prompt — texts/images podem vir vazios."""
+    full_prompt = prompt + _build_text_block(texts)
+    if not images:
+        return full_prompt
+    parts: list = [full_prompt]
+    for data, mime in images:
+        parts.append(types.Part.from_bytes(data=data, mime_type=mime))
+    return parts
 
 
 _FIELDS_SCHEMA = {
@@ -98,8 +133,9 @@ _FIELDS_SCHEMA = {
                     "key": {"type": "STRING"},
                     "value": {"type": "STRING"},
                     "confidence": {"type": "NUMBER"},
+                    "source": {"type": "STRING", "enum": ["image", "audio", "text"]},
                 },
-                "required": ["key", "value", "confidence"],
+                "required": ["key", "value", "confidence", "source"],
             }
         }
     },
@@ -120,38 +156,39 @@ def _parse_fields_response(response) -> list[ExtractedField]:
         raise ExtractionError(f"Resposta do modelo em formato inesperado: {err}") from err
 
 
+async def _extract_flat(
+    fields: list[FieldHint],
+    *,
+    texts: list[tuple[str, str]],
+    images: list[tuple[bytes, str]],
+) -> list[ExtractedField]:
+    prompt = PROMPT_TEMPLATE.format(fields_spec=_build_fields_spec(fields))
+    contents = _build_contents(prompt, texts, images)
+    response = await _generate_with_retry(
+        model=MODEL,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json", response_schema=_FIELDS_SCHEMA
+        ),
+    )
+    return _parse_fields_response(response)
+
+
 async def extract_from_media(
     fields: list[FieldHint], media_bytes: bytes, mime_type: str,
 ) -> list[ExtractedField]:
-    prompt = PROMPT_TEMPLATE.format(fields_spec=_build_fields_spec(fields))
-    response = await _generate_with_retry(
-        model=MODEL,
-        contents=[prompt, types.Part.from_bytes(data=media_bytes, mime_type=mime_type)],
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=_FIELDS_SCHEMA
-        ),
-    )
-    return _parse_fields_response(response)
+    """Compat: extração clássica com uma única mídia (endpoint /extract/)."""
+    return await _extract_flat(fields, texts=[], images=[(media_bytes, mime_type)])
 
 
 async def extract_from_text(fields: list[FieldHint], text: str) -> list[ExtractedField]:
-    prompt = (
-        PROMPT_TEMPLATE.format(fields_spec=_build_fields_spec(fields))
-        + f"\n\nTEXTO TRANSCRITO (fala do usuário):\n{text}"
-    )
-    response = await _generate_with_retry(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=_FIELDS_SCHEMA
-        ),
-    )
-    return _parse_fields_response(response)
+    """Compat: extração clássica só com texto (endpoint /extract/)."""
+    return await _extract_flat(fields, texts=[("text", text)], images=[])
 
 
 # ─── classificação: usar template existente ou propor um novo ─────────────
 
-CLASSIFY_PROMPT_TEMPLATE = """Você analisa relatos de trabalhadores de campo (texto transcrito de voz, ou uma foto) e decide qual TIPO de formulário se aplica.
+CLASSIFY_PROMPT_TEMPLATE = """Você analisa relatos de trabalhadores de campo (uma ou mais fotos, e/ou texto transcrito de voz ou digitado — possivelmente combinados na mesma captura) e decide qual TIPO de formulário se aplica.
 
 TEMPLATES DISPONÍVEIS:
 {templates_spec}
@@ -253,20 +290,20 @@ _CLASSIFY_SCHEMA = {
 async def classify_or_propose(
     catalog: list[TemplateCatalogEntry],
     *,
-    text: str | None = None,
-    media_bytes: bytes | None = None,
-    mime_type: str | None = None,
+    texts: list[tuple[str, str]] | None = None,
+    images: list[tuple[bytes, str]] | None = None,
 ) -> ClassificationResult:
     """Decide qual template usar, ou propõe um novo quando nada se encaixa.
-    Passe `text` (voz já transcrita) OU `media_bytes`+`mime_type` (foto)."""
-    prompt = CLASSIFY_PROMPT_TEMPLATE.format(templates_spec=_build_templates_spec(catalog))
+    `texts` é uma lista de (fonte, conteúdo) — fonte é "audio" (voz já
+    transcrita) ou "text" (digitado); `images` é uma lista de (bytes, mime)
+    — uma ou mais fotos. Podem vir combinados (ex: 2 fotos + 1 áudio)."""
+    texts = texts or []
+    images = images or []
+    if not texts and not images:
+        raise ValueError("Forneça texts e/ou images.")
 
-    if text is not None:
-        contents = prompt + f"\n\nTEXTO TRANSCRITO (fala do usuário):\n{text}"
-    elif media_bytes is not None:
-        contents = [prompt, types.Part.from_bytes(data=media_bytes, mime_type=mime_type)]
-    else:
-        raise ValueError("Forneça text ou media_bytes.")
+    prompt = CLASSIFY_PROMPT_TEMPLATE.format(templates_spec=_build_templates_spec(catalog))
+    contents = _build_contents(prompt, texts, images)
 
     response = await _generate_with_retry(
         model=MODEL,
@@ -286,7 +323,7 @@ async def classify_or_propose(
 
 # ─── extração para um template que pode ter itens repetidos ───────────────
 
-ITEMS_PROMPT_TEMPLATE = """Você extrai informações estruturadas de relatos de trabalhadores de campo (voz ou foto), incluindo casos com MÚLTIPLOS itens do mesmo tipo (ex: vários produtos numa foto de prateleira/despensa).
+ITEMS_PROMPT_TEMPLATE = """Você extrai informações estruturadas de relatos de trabalhadores de campo (uma ou mais fotos e/ou texto transcrito de voz ou digitado, possivelmente combinados), incluindo casos com MÚLTIPLOS itens do mesmo tipo (ex: vários produtos numa foto de prateleira/despensa, possíveis várias fotos do mesmo estoque de ângulos diferentes — não conte o mesmo item duas vezes se aparecer em mais de uma foto).
 
 CAMPOS DE NÍVEL DE RELATÓRIO (extraia uma vez só, se presentes):
 {flat_spec}
@@ -295,18 +332,20 @@ CAMPOS POR ITEM (identifique CADA item distinto no conteúdo e extraia estes cam
 {item_spec}
 
 REGRAS:
-- Identifique quantos itens distintos existem no conteúdo (ex: conte cada produto visível na foto).
+- Identifique quantos itens distintos existem no conteúdo (ex: conte cada produto visível nas fotos, sem repetir o mesmo item visto em mais de uma foto).
 - Extraia os campos por item para CADA item encontrado — não agrupe itens diferentes numa linha só.
 - Para campos não encontrados, retorne string vazia "".
 - Nunca preencha um campo com um valor que pertence a outro conceito só para
   não deixá-lo vazio — nesse caso, retorne "".
+- Para cada campo preenchido (de relatório ou de item), informe em "source"
+  de qual fonte o valor veio predominantemente: "image", "audio" ou "text".
 - Retorne APENAS o JSON pedido, sem texto adicional.
 
 Retorne um JSON com esta estrutura exata:
 {{
-  "fields": [{{"key": "chave", "value": "valor", "confidence": 0.9}}],
+  "fields": [{{"key": "chave", "value": "valor", "confidence": 0.9, "source": "image"}}],
   "items": [
-    {{"fields": [{{"key": "chave_do_item", "value": "valor", "confidence": 0.9}}]}}
+    {{"fields": [{{"key": "chave_do_item", "value": "valor", "confidence": 0.9, "source": "image"}}]}}
   ]
 }}
 """
@@ -351,20 +390,21 @@ async def extract_for_template(
     fields: list[FieldHint],
     has_items: bool,
     *,
-    text: str | None = None,
-    media_bytes: bytes | None = None,
-    mime_type: str | None = None,
+    texts: list[tuple[str, str]] | None = None,
+    images: list[tuple[bytes, str]] | None = None,
 ) -> tuple[list[ExtractedField], list[ExtractedItem]]:
     """Extrai os valores para um template já resolvido (existente ou recém-criado).
+    `texts`/`images` seguem o mesmo formato de `classify_or_propose` — podem
+    combinar várias fotos e/ou áudio e/ou texto na mesma captura.
     Retorna (campos_de_nivel_de_relatorio, itens) — `itens` fica vazio quando
     has_items=False."""
+    texts = texts or []
+    images = images or []
+    if not texts and not images:
+        raise ValueError("Forneça texts e/ou images.")
+
     if not has_items:
-        if text is not None:
-            flat = await extract_from_text(fields, text)
-        elif media_bytes is not None:
-            flat = await extract_from_media(fields, media_bytes, mime_type)
-        else:
-            raise ValueError("Forneça text ou media_bytes.")
+        flat = await _extract_flat(fields, texts=texts, images=images)
         return flat, []
 
     flat_fields = [f for f in fields if not f.is_item_field]
@@ -373,13 +413,7 @@ async def extract_for_template(
         flat_spec=_build_fields_spec(flat_fields) or "(nenhum)",
         item_spec=_build_fields_spec(item_fields) or "(nenhum)",
     )
-
-    if text is not None:
-        contents = prompt + f"\n\nTEXTO TRANSCRITO (fala do usuário):\n{text}"
-    elif media_bytes is not None:
-        contents = [prompt, types.Part.from_bytes(data=media_bytes, mime_type=mime_type)]
-    else:
-        raise ValueError("Forneça text ou media_bytes.")
+    contents = _build_contents(prompt, texts, images)
 
     response = await _generate_with_retry(
         model=MODEL,

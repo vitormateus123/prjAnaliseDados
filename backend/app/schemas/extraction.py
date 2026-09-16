@@ -23,6 +23,10 @@ class ExtractedField(BaseModel):
     key: str
     value: str
     confidence: float = Field(ge=0.0, le=1.0)
+    # De qual fonte esse valor veio predominantemente — só faz sentido
+    # quando a captura combina mais de uma modalidade (ex: foto + áudio).
+    # 'image' | 'audio' | 'text' — None quando o modelo não informou.
+    source: str | None = None
 
 class ExtractResponse(BaseModel):
     success: bool
@@ -81,6 +85,24 @@ class ClassificationResult(BaseModel):
     # ainda não tem (ex: nota fiscal sem "emissor"). Mesmo formato dos campos
     # de new_template — extract.py os grava no template antes de extrair.
     suggested_fields: list[ProposedField] = []
+
+
+# ─── requisição do endpoint /extract/auto (multimodal combinada) ──────────
+# Vai como JSON (não multipart) de propósito: o app pode anexar mais de uma
+# foto + um áudio + um texto na MESMA captura, e o cliente RN atual não
+# consegue subir múltiplos arquivos binários numa única requisição multipart
+# de forma confiável (ver comentário em AutoExtractionService.ts). Cada
+# arquivo vai em base64 dentro do JSON.
+
+class MediaItem(BaseModel):
+    data: str        # conteúdo do arquivo, codificado em base64
+    mime_type: str
+
+
+class AutoExtractRequest(BaseModel):
+    photos: list[MediaItem] = []   # 0 ou mais fotos da mesma captura
+    audio: MediaItem | None = None  # no máximo uma gravação de voz
+    text: str | None = None         # texto digitado, pode combinar com foto/áudio
 
 
 # ─── resposta do endpoint /extract/auto ────────────────────────────────────

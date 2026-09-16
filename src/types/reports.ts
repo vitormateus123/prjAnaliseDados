@@ -15,6 +15,11 @@ export type FieldValue =
   | { type: 'select'; value: string | null }
   | { type: 'multiselect'; value: string[] };
 
+// De qual fonte um valor veio, quando a captura combinou mais de uma
+// modalidade (ex: 2 fotos + um áudio na mesma captura) — só informativo,
+// pra auditoria/revisão; não existe quando o campo é 'manual'.
+export type InputSource = 'image' | 'audio' | 'text';
+
 export interface ReportField {
   form_field_id: string;
   key: string;
@@ -23,6 +28,7 @@ export interface ReportField {
   confidence?: number;        // 0-1, vindo da IA
   source: FieldSource;
   was_edited: boolean;
+  input_source?: InputSource | null;
 }
 
 export interface Capture {
@@ -55,6 +61,7 @@ export interface AutoExtractedField {
   key: string;
   value: string;
   confidence: number;
+  source?: InputSource;
 }
 
 export interface AutoExtractedItem {

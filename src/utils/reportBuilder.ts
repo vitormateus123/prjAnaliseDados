@@ -12,6 +12,7 @@ interface ExtractedFieldLike {
   key: string;
   value: string;
   confidence: number;
+  source?: 'image' | 'audio' | 'text';
 }
 
 export function buildReportFields(
@@ -29,6 +30,7 @@ export function buildReportFields(
         confidence: found.confidence,
         source: 'ai',
         was_edited: false,
+        input_source: found.source ?? null,
       };
     }
     return {

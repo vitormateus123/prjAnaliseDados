@@ -1,4 +1,5 @@
 # backend/app/api/routes/extract.py
+import base64
 import json
 import logging
 import time
@@ -6,6 +7,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from app.schemas.extraction import (
     ExtractResponse, FieldHint, AutoExtractResponse,
     TemplateCatalogEntry, TemplateCatalogField, ProposedField,
+    MediaItem, AutoExtractRequest,
 )
 from app.schemas.forms import FormFieldOut, FormTemplateOut
 from app.services import gemini_service, groq_service
@@ -26,6 +28,24 @@ async def _read_and_validate(file: UploadFile) -> bytes:
     if file.content_type not in ALLOWED_MIME:
         raise HTTPException(
             status_code=415, detail=f"Tipo de arquivo não suportado: {file.content_type}"
+        )
+    return content
+
+
+def _decode_media_item(item: MediaItem, *, label: str) -> bytes:
+    """Mesmas validações de _read_and_validate, mas para um MediaItem vindo
+    em base64 dentro do JSON de /extract/auto (ver comentário no schema)."""
+    try:
+        content = base64.b64decode(item.data, validate=True)
+    except Exception:
+        raise HTTPException(status_code=422, detail=f"{label}: dado em base64 inválido.")
+    if not content:
+        raise HTTPException(status_code=422, detail=f"{label}: arquivo vazio.")
+    if len(content) > MAX_SIZE:
+        raise HTTPException(status_code=413, detail=f"{label}: arquivo muito grande (máx 10 MB).")
+    if item.mime_type not in ALLOWED_MIME:
+        raise HTTPException(
+            status_code=415, detail=f"{label}: tipo de arquivo não suportado: {item.mime_type}"
         )
     return content
 
@@ -244,42 +264,54 @@ def _catalog_entry_to_template_out(entry: TemplateCatalogEntry) -> FormTemplateO
 
 
 @router.post("/auto", response_model=AutoExtractResponse)
-async def extract_auto(
-    media_type: str = Form(...),   # 'voice', 'photo' ou 'text'
-    file: UploadFile | None = File(None),
-    text: str | None = Form(None),  # usado quando media_type='text'
-):
-    """Fluxo novo: o app manda só a mídia (ou texto digitado), sem escolher
-    formulário antes.
-    1. transcreve (voz), usa a foto direto, ou usa o texto digitado como está;
-    2. pede pra IA classificar entre os templates existentes, ou propor um novo;
+async def extract_auto(payload: AutoExtractRequest):
+    """Fluxo novo: o app manda a captura — uma ou mais fotos, e/ou um áudio,
+    e/ou um texto digitado, podendo combinar tudo na mesma captura — sem
+    escolher formulário antes.
+    1. transcreve o áudio, se houver;
+    2. pede pra IA classificar entre os templates existentes (usando todas
+       as fontes fornecidas em conjunto), ou propor um novo;
     3. se propôs novo, grava no banco (pending de revisão, mas já utilizável);
-    4. extrai os campos (ou itens, se has_items=True) pro template resolvido."""
+    4. extrai os campos (ou itens, se has_items=True) pro template resolvido,
+       usando as mesmas fontes combinadas."""
     try:
-        transcript: str | None = None
-        media_bytes: bytes | None = None
-        mime_type: str | None = None
+        has_text = bool(payload.text and payload.text.strip())
+        has_audio = payload.audio is not None
+        has_photos = bool(payload.photos)
+        if not has_text and not has_audio and not has_photos:
+            raise HTTPException(
+                status_code=422, detail="Envie ao menos uma foto, uma gravação ou um texto."
+            )
 
-        if media_type == "text":
-            if not text or not text.strip():
-                raise HTTPException(status_code=422, detail="Digite alguma informação antes de enviar.")
-            transcript = text.strip()
-        elif media_type == "voice":
-            if file is None:
-                raise HTTPException(status_code=422, detail="Áudio não enviado.")
-            content = await _read_and_validate(file)
-            transcript = await groq_service.transcribe_audio(content, file.content_type)
-        else:
-            if file is None:
-                raise HTTPException(status_code=422, detail="Arquivo não enviado.")
-            content = await _read_and_validate(file)
-            media_bytes = content
-            mime_type = file.content_type
+        texts: list[tuple[str, str]] = []
+        used_whisper = False
 
+        if has_audio:
+            audio_bytes = _decode_media_item(payload.audio, label="Áudio")
+            transcript = await groq_service.transcribe_audio(audio_bytes, payload.audio.mime_type)
+            used_whisper = True
+            if transcript and transcript.strip():
+                texts.append(("audio", transcript.strip()))
+
+        if has_text:
+            texts.append(("text", payload.text.strip()))
+
+        images: list[tuple[bytes, str]] = [
+            (_decode_media_item(photo, label=f"Foto {i + 1}"), photo.mime_type)
+            for i, photo in enumerate(payload.photos)
+        ]
+
+        if not texts and not images:
+            # Só acontece se a única fonte era áudio e a transcrição veio vazia
+            # (ex: gravação silenciosa) — sem isso o app trava sem explicação.
+            raise HTTPException(
+                status_code=422,
+                detail="Não conseguimos identificar conteúdo na gravação. Tente falar mais perto do microfone ou escrever a informação.",
+            )
 
         catalog = _load_catalog()
         classification = await gemini_service.classify_or_propose(
-            catalog, text=transcript, media_bytes=media_bytes, mime_type=mime_type,
+            catalog, texts=texts, images=images,
         )
 
         template_is_new = classification.match == "new"
@@ -330,12 +362,12 @@ async def extract_auto(
             for f in template.fields
         ]
         flat, items = await gemini_service.extract_for_template(
-            fields, template.has_items, text=transcript, media_bytes=media_bytes, mime_type=mime_type,
+            fields, template.has_items, texts=texts, images=images,
         )
 
         model = (
             f"whisper-large-v3 + {gemini_service.MODEL}"
-            if media_type == "voice" else gemini_service.MODEL
+            if used_whisper else gemini_service.MODEL
         )
 
         return AutoExtractResponse(
@@ -355,14 +387,14 @@ async def extract_auto(
     except HTTPException:
         raise
     except ExtractionError as e:
-        logger.warning("Extração automática falhou (%s): %s", media_type, e)
+        logger.warning("Extração automática falhou: %s", e)
         return AutoExtractResponse(
             success=False, template_id="", template_name="", template_is_new=False,
             has_items=False, fields=[], items=[], provider="gemini",
             model=gemini_service.MODEL, error=str(e), retryable=e.retryable,
         )
-    except Exception as e:
-        logger.exception("Falha na extração automática (%s)", media_type)
+    except Exception:
+        logger.exception("Falha na extração automática")
         return AutoExtractResponse(
             success=False, template_id="", template_name="", template_is_new=False,
             has_items=False, fields=[], items=[], provider="gemini",

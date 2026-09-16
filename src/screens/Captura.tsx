@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, Alert, ActivityIndicator,
-  StyleSheet, Animated, Easing, SafeAreaView, TextInput,
+  StyleSheet, Animated, Easing, SafeAreaView, TextInput, ScrollView, Image,
 } from 'react-native';
 import { useNavigation, useRoute, NavigationProp, RouteProp } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
@@ -12,7 +12,7 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../App';
 import { extractFields } from '../services/api/ai/ExtractionService';
-import { autoExtractFields, autoExtractFromText } from '../services/api/ai/AutoExtractionService';
+import { autoExtractCombined, StagedPhoto } from '../services/api/ai/AutoExtractionService';
 import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
 import { fetchFormTemplateById } from '../services/api/forms/TemplatesService';
@@ -22,11 +22,14 @@ import { buildReportFields, buildReportItems, emptyReportItem } from '../utils/r
 import { styles as shared } from '../styles';
 import { colors, gradients, radius, shadows, spacing } from '../theme';
 
-// Fase 3: a tela agora funciona em dois modos.
-// - Auto (padrão, sem formTemplateId): o app manda só a mídia pra
-//   /extract/auto e a IA decide qual template usar (ou propõe um novo).
+// A tela funciona em dois modos.
+// - Auto (padrão, sem formTemplateId): o usuário anexa foto(s), áudio e/ou
+//   texto — em qualquer combinação — e só então envia; a IA decide qual
+//   template usar (ou propõe um novo) a partir de TUDO que foi anexado
+//   junto. Nada aqui pressupõe que uma modalidade "pertence" a um domínio.
 // - Manual (formTemplateId presente, vindo da FormSelectScreen): mantido
-//   pra quem prefere escolher o formulário antes — usa o /extract/ clássico.
+//   pra quem prefere escolher o formulário antes — usa o /extract/ clássico,
+//   uma mídia por vez, envio imediato (fluxo mais simples, sem combinação).
 export default function CapturaScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const route = useRoute<RouteProp<RootStackParamList, 'Captura'>>();
@@ -40,6 +43,21 @@ export default function CapturaScreen() {
   const [textMode, setTextMode] = useState(false);
   const [textValue, setTextValue] = useState('');
   const audio = useAudioCapture();
+
+  // Anexos da captura atual (modo automático) — o usuário monta isso aos
+  // poucos (foto, foto, um áudio, um texto...) e só dispara a extração
+  // quando tocar em "Enviar informação".
+  const [stagedPhotos, setStagedPhotos] = useState<StagedPhoto[]>([]);
+  const [stagedAudio, setStagedAudio] = useState<{ uri: string; mimeType: string } | null>(null);
+  const [stagedText, setStagedText] = useState('');
+
+  const hasStaged = stagedPhotos.length > 0 || !!stagedAudio || stagedText.trim().length > 0;
+
+  function clearStaged() {
+    setStagedPhotos([]);
+    setStagedAudio(null);
+    setStagedText('');
+  }
 
   // Pulso suave ao redor do botão de gravação enquanto o áudio está ativo —
   // dá feedback visual claro de "estou ouvindo" sem precisar de libs extras.
@@ -80,7 +98,7 @@ export default function CapturaScreen() {
 
   async function persistReport(
     resolvedTemplate: FormTemplate,
-    capture: Capture,
+    captures: Capture[],
     flatFields: ReturnType<typeof buildReportFields>,
     items: ReturnType<typeof buildReportItems>,
     extractionFailed: boolean,
@@ -93,7 +111,7 @@ export default function CapturaScreen() {
       status: 'draft',
       fields: flatFields,
       items,
-      captures: [capture],
+      captures,
       created_at: now,
       updated_at: now,
     };
@@ -117,7 +135,7 @@ export default function CapturaScreen() {
     if (!netState.isConnected) {
       Alert.alert('Sem conexão', 'Você está offline — a extração por IA não está disponível. Preencha manualmente.');
       const items = activeTemplate.has_items ? [emptyReportItem(itemTemplateFields)] : [];
-      await persistReport(activeTemplate, capture, buildReportFields(flatTemplateFields, null), items, true);
+      await persistReport(activeTemplate, [capture], buildReportFields(flatTemplateFields, null), items, true);
       return;
     }
 
@@ -132,7 +150,7 @@ export default function CapturaScreen() {
       }
       const items = activeTemplate.has_items ? [emptyReportItem(itemTemplateFields)] : [];
       await persistReport(
-        activeTemplate, capture,
+        activeTemplate, [capture],
         buildReportFields(flatTemplateFields, result.success ? result.fields : null),
         items, !result.success,
       );
@@ -145,30 +163,68 @@ export default function CapturaScreen() {
       if (__DEV__) console.warn('[Captura] falha na extração:', err);
       Alert.alert('Extração falhou', message);
       const items = activeTemplate.has_items ? [emptyReportItem(itemTemplateFields)] : [];
-      await persistReport(activeTemplate, capture, buildReportFields(flatTemplateFields, null), items, true);
+      await persistReport(activeTemplate, [capture], buildReportFields(flatTemplateFields, null), items, true);
     }
   }
 
-  // ─── modo automático: IA decide o template ──────────────────────────────
-  // Comum a foto/voz (têm uma mídia real) e texto (não tem) — cada um só
-  // chama a extração de um jeito diferente e delega o resto pra cá.
+  async function processCapture(
+    mediaUri: string,
+    mediaType: 'voice' | 'photo',
+    mimeType: string,
+  ) {
+    if (!template) return;
+
+    setIsProcessing(true);
+    setError(null);
+
+    const capture: Capture = {
+      id: Crypto.randomUUID(),
+      type: mediaType,
+      local_path: mediaUri,
+      mime_type: mimeType,
+      created_at: new Date().toISOString(),
+    };
+
+    try {
+      await processCaptureManual(template, capture, mediaUri, mediaType, mimeType);
+    } finally {
+      setIsProcessing(false);
+    }
+  }
+
+  // ─── modo manual: texto digitado ainda não é suportado (/extract/
+  //     clássico não lida com texto) ───────────────────────────────────
+  function rejectManualText() {
+    Alert.alert(
+      'Ainda não disponível',
+      'A entrada por texto funciona apenas na captura automática por enquanto. Use foto ou voz para este formulário.',
+    );
+  }
+
+  // ─── modo automático: usuário anexa foto(s)/áudio/texto e a IA decide ──
+  function finishFailureAlert(retry: () => void) {
+    Alert.alert(
+      'Não foi possível identificar o formulário',
+      'Tente de novo, descreva de outro jeito ou escolha o formulário manualmente.',
+      [
+        { text: 'Escolher manualmente', onPress: () => navigation.navigate('FormSelect') },
+        // Mantém o que já foi anexado — só abre a caixa de texto pra
+        // complementar/reformular em vez de forçar a lista técnica de
+        // formulários.
+        { text: 'Descrever de outro jeito', onPress: () => { setTextValue(stagedText); setTextMode(true); } },
+        { text: 'Tentar de novo', onPress: retry },
+      ],
+    );
+  }
+
   async function finishAutoCapture(
-    capture: Capture,
+    captures: Capture[],
     auto: AutoExtractionResult,
     retry: () => void,
   ) {
     if (!auto.success || !auto.template_id) {
       if (__DEV__) console.warn('[Captura] extração automática falhou:', auto.error);
-      Alert.alert(
-        'Não foi possível identificar o formulário',
-        'Tente novamente ou escolha o formulário manualmente.',
-        [
-          { text: 'Escolher manualmente', onPress: () => navigation.navigate('FormSelect') },
-          // Reprocessa a mesma captura já feita — nada foi salvo/navegado
-          // ainda nesse ponto, então tentar de novo aqui é seguro.
-          { text: 'Tentar de novo', onPress: retry },
-        ],
-      );
+      finishFailureAlert(retry);
       return;
     }
 
@@ -203,15 +259,13 @@ export default function CapturaScreen() {
       );
     }
 
-    await persistReport(resolvedTemplate, capture, flatFields, items, false);
+    clearStaged();
+    await persistReport(resolvedTemplate, captures, flatFields, items, false);
   }
 
-  async function processCaptureAuto(
-    capture: Capture,
-    mediaUri: string,
-    mediaType: 'voice' | 'photo',
-    mimeType: string,
-  ) {
+  async function submitStagedCapture() {
+    if (!hasStaged) return;
+
     const netState = await NetInfo.fetch();
     if (!netState.isConnected) {
       Alert.alert(
@@ -222,88 +276,47 @@ export default function CapturaScreen() {
       return;
     }
 
-    const auto = await autoExtractFields(mediaUri, mediaType, mimeType);
-    await finishAutoCapture(capture, auto, () => processCapture(mediaUri, mediaType, mimeType));
-  }
-
-  async function processCaptureAutoText(capture: Capture, text: string) {
-    const netState = await NetInfo.fetch();
-    if (!netState.isConnected) {
-      Alert.alert(
-        'Sem conexão',
-        'A identificação automática do formulário precisa de internet. Escolha um formulário manualmente para continuar offline.',
-      );
-      navigation.navigate('FormSelect');
-      return;
-    }
-
-    const auto = await autoExtractFromText(text);
-    await finishAutoCapture(capture, auto, () => processTextCapture(text));
-  }
-
-  async function processCapture(
-    mediaUri: string,
-    mediaType: 'voice' | 'photo',
-    mimeType: string,
-  ) {
-    if (!isAutoMode && !template) return;
-
     setIsProcessing(true);
     setError(null);
 
-    const capture: Capture = {
-      id: Crypto.randomUUID(),
-      type: mediaType,
-      local_path: mediaUri,
-      mime_type: mimeType,
-      created_at: new Date().toISOString(),
-    };
+    const now = new Date().toISOString();
+    const captures: Capture[] = [
+      ...stagedPhotos.map((p): Capture => ({
+        id: Crypto.randomUUID(), type: 'photo', local_path: p.uri, mime_type: p.mimeType, created_at: now,
+      })),
+      ...(stagedAudio ? [{
+        id: Crypto.randomUUID(), type: 'voice' as const, local_path: stagedAudio.uri,
+        mime_type: stagedAudio.mimeType, created_at: now,
+      }] : []),
+      ...(stagedText.trim() ? [{
+        id: Crypto.randomUUID(), type: 'text' as const, mime_type: 'text/plain', created_at: now,
+      }] : []),
+    ];
 
     try {
-      if (isAutoMode) {
-        await processCaptureAuto(capture, mediaUri, mediaType, mimeType);
-      } else if (template) {
-        await processCaptureManual(template, capture, mediaUri, mediaType, mimeType);
-      }
+      const auto = await autoExtractCombined({
+        photos: stagedPhotos,
+        audioUri: stagedAudio?.uri,
+        audioMimeType: stagedAudio?.mimeType,
+        text: stagedText,
+      });
+      await finishAutoCapture(captures, auto, () => submitStagedCapture());
     } finally {
       setIsProcessing(false);
     }
   }
 
-  // Texto digitado só existe no modo automático por enquanto — no modo
-  // manual o endpoint clássico (/extract/) ainda não sabe lidar com texto.
-  async function processTextCapture(text: string) {
-    setIsProcessing(true);
-    setError(null);
-
-    const capture: Capture = {
-      id: Crypto.randomUUID(),
-      type: 'text',
-      mime_type: 'text/plain',
-      created_at: new Date().toISOString(),
-    };
-
-    try {
-      if (isAutoMode) {
-        await processCaptureAutoText(capture, text);
-      } else {
-        Alert.alert(
-          'Ainda não disponível',
-          'A entrada por texto funciona apenas na captura automática por enquanto. Use foto ou voz para este formulário.',
-        );
-      }
-    } finally {
-      setIsProcessing(false);
-    }
-  }
-
-  function handleTextSubmit() {
+  function handleTextConfirm() {
     const trimmed = textValue.trim();
     if (!trimmed) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     setTextMode(false);
     setTextValue('');
-    processTextCapture(trimmed);
+    if (isAutoMode) {
+      setStagedText(trimmed);
+    } else {
+      rejectManualText();
+    }
   }
 
   async function handleToggleRecording() {
@@ -311,7 +324,11 @@ export default function CapturaScreen() {
     if (audio.isRecording) {
       const uri = await audio.stopRecording();
       if (uri) {
-        await processCapture(uri, 'voice', 'audio/m4a');
+        if (isAutoMode) {
+          setStagedAudio({ uri, mimeType: 'audio/m4a' });
+        } else {
+          await processCapture(uri, 'voice', 'audio/m4a');
+        }
       }
       return;
     }
@@ -338,7 +355,14 @@ export default function CapturaScreen() {
     if (result.canceled || !result.assets?.[0]) return;
 
     const asset = result.assets[0];
-    await processCapture(asset.uri, 'photo', asset.mimeType ?? 'image/jpeg');
+    if (isAutoMode) {
+      setStagedPhotos((prev) => [
+        ...prev,
+        { id: Crypto.randomUUID(), uri: asset.uri, mimeType: asset.mimeType ?? 'image/jpeg' },
+      ]);
+    } else {
+      await processCapture(asset.uri, 'photo', asset.mimeType ?? 'image/jpeg');
+    }
   }
 
   async function pickFromLibrary() {
@@ -351,12 +375,26 @@ export default function CapturaScreen() {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       quality: 0.7,
+      // No modo automático dá pra escolher várias fotos de uma vez — um
+      // documento de várias páginas, uma prateleira inteira em ângulos
+      // diferentes etc. No modo manual mantém 1 por vez (fluxo mais simples).
+      allowsMultipleSelection: isAutoMode,
+      selectionLimit: isAutoMode ? 6 : 1,
     });
 
-    if (result.canceled || !result.assets?.[0]) return;
+    if (result.canceled || !result.assets?.length) return;
 
-    const asset = result.assets[0];
-    await processCapture(asset.uri, 'photo', asset.mimeType ?? 'image/jpeg');
+    if (isAutoMode) {
+      setStagedPhotos((prev) => [
+        ...prev,
+        ...result.assets.map((a) => ({
+          id: Crypto.randomUUID(), uri: a.uri, mimeType: a.mimeType ?? 'image/jpeg',
+        })),
+      ]);
+    } else {
+      const asset = result.assets[0];
+      await processCapture(asset.uri, 'photo', asset.mimeType ?? 'image/jpeg');
+    }
   }
 
   function handlePhotoCapture() {
@@ -366,6 +404,10 @@ export default function CapturaScreen() {
       { text: 'Escolher da galeria', onPress: () => { pickFromLibrary(); } },
       { text: 'Cancelar', style: 'cancel' },
     ]);
+  }
+
+  function removeStagedPhoto(id: string) {
+    setStagedPhotos((prev) => prev.filter((p) => p.id !== id));
   }
 
   if (loadingTemplate) {
@@ -395,7 +437,7 @@ export default function CapturaScreen() {
           <Text style={shared.title}>{isAutoMode ? 'Nova captura' : template!.name}</Text>
           <Text style={shared.subtitle}>
             {isAutoMode
-              ? 'Grave por voz, tire uma foto ou escreva — a IA identifica o formulário certo'
+              ? 'Junte foto, voz e/ou texto sobre a mesma informação — a IA organiza tudo'
               : 'Grave por voz ou tire uma foto para começar'}
           </Text>
         </View>
@@ -403,6 +445,66 @@ export default function CapturaScreen() {
         {error && (
           <View style={shared.errorBox}>
             <Text style={shared.errorText}>{error}</Text>
+          </View>
+        )}
+
+        {isAutoMode && hasStaged && !textMode && (
+          <View style={local.stagedSection}>
+            <Text style={local.stagedLabel}>Anexado nesta captura</Text>
+
+            {stagedPhotos.length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={local.stagedPhotoRow}>
+                {stagedPhotos.map((p) => (
+                  <View key={p.id} style={local.stagedThumbWrap}>
+                    <Image source={{ uri: p.uri }} style={local.stagedThumb} />
+                    <TouchableOpacity
+                      style={local.stagedRemoveBadge}
+                      onPress={() => removeStagedPhoto(p.id)}
+                      disabled={isProcessing}
+                      hitSlop={8}
+                    >
+                      <Ionicons name="close" size={12} color={colors.textOnPrimary} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
+
+            {stagedAudio && (
+              <View style={local.stagedChip}>
+                <Ionicons name="mic" size={14} color={colors.primary} />
+                <Text style={local.stagedChipText}>Gravação anexada</Text>
+                <TouchableOpacity onPress={() => setStagedAudio(null)} disabled={isProcessing} hitSlop={8}>
+                  <Ionicons name="close-circle" size={16} color={colors.textMuted} />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {stagedText.trim().length > 0 && (
+              <View style={local.stagedChip}>
+                <Ionicons name="create-outline" size={14} color={colors.primary} />
+                <Text style={local.stagedChipText} numberOfLines={1}>{stagedText}</Text>
+                <TouchableOpacity onPress={() => setStagedText('')} disabled={isProcessing} hitSlop={8}>
+                  <Ionicons name="close-circle" size={16} color={colors.textMuted} />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <TouchableOpacity
+              style={[local.sendButton, isProcessing && local.recordButtonDisabled]}
+              onPress={submitStagedCapture}
+              disabled={isProcessing}
+              activeOpacity={0.88}
+            >
+              {isProcessing ? (
+                <ActivityIndicator size="small" color={colors.textOnPrimary} />
+              ) : (
+                <>
+                  <Ionicons name="send" size={16} color={colors.textOnPrimary} />
+                  <Text style={local.sendButtonText}>Enviar informação</Text>
+                </>
+              )}
+            </TouchableOpacity>
           </View>
         )}
 
@@ -440,6 +542,8 @@ export default function CapturaScreen() {
                   ? 'Processando...'
                   : recording
                   ? 'Toque para parar'
+                  : stagedAudio
+                  ? 'Toque para regravar'
                   : 'Toque para gravar'}
               </Text>
             </View>
@@ -454,21 +558,21 @@ export default function CapturaScreen() {
                 <Ionicons name="camera" size={20} color={colors.primary} />
               </View>
               <Text style={local.photoButtonText}>
-                {isProcessing ? 'Processando...' : 'Adicionar foto'}
+                {isProcessing ? 'Processando...' : stagedPhotos.length > 0 ? 'Adicionar mais uma foto' : 'Adicionar foto'}
               </Text>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </TouchableOpacity>
 
             <TouchableOpacity
               style={[local.photoButton, local.photoButtonSpaced]}
-              onPress={() => setTextMode(true)}
+              onPress={() => { setTextValue(stagedText); setTextMode(true); }}
               disabled={isProcessing || recording}
               activeOpacity={0.85}
             >
               <View style={local.photoIconWrap}>
                 <Ionicons name="create-outline" size={20} color={colors.primary} />
               </View>
-              <Text style={local.photoButtonText}>Escrever</Text>
+              <Text style={local.photoButtonText}>{stagedText.trim() ? 'Editar texto' : 'Escrever'}</Text>
               <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </TouchableOpacity>
           </>
@@ -501,14 +605,14 @@ export default function CapturaScreen() {
                   local.textSendButton,
                   (!textValue.trim() || isProcessing) && local.recordButtonDisabled,
                 ]}
-                onPress={handleTextSubmit}
+                onPress={handleTextConfirm}
                 disabled={!textValue.trim() || isProcessing}
                 activeOpacity={0.85}
               >
                 {isProcessing ? (
                   <ActivityIndicator size="small" color={colors.textOnPrimary} />
                 ) : (
-                  <Text style={local.textSendText}>Enviar</Text>
+                  <Text style={local.textSendText}>{isAutoMode ? 'Adicionar' : 'Enviar'}</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -598,4 +702,31 @@ const local = StyleSheet.create({
   textSendText: { fontSize: 15, fontWeight: '700', color: colors.textOnPrimary },
   manualLink: { marginTop: spacing.xl, alignItems: 'center' },
   manualLinkText: { fontSize: 13, fontWeight: '600', color: colors.primary },
+  stagedSection: {
+    backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.border,
+    padding: spacing.lg, marginBottom: spacing.xl, gap: spacing.sm,
+    ...shadows.sm,
+  },
+  stagedLabel: { fontSize: 12, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.4, marginBottom: 2 },
+  stagedPhotoRow: { flexDirection: 'row' },
+  stagedThumbWrap: { marginRight: spacing.sm, position: 'relative' },
+  stagedThumb: { width: 56, height: 56, borderRadius: radius.md, backgroundColor: colors.border },
+  stagedRemoveBadge: {
+    position: 'absolute', top: -6, right: -6,
+    width: 20, height: 20, borderRadius: 10,
+    backgroundColor: colors.dangerStrong,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  stagedChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: colors.primaryLight, borderRadius: radius.pill,
+    paddingVertical: 6, paddingHorizontal: 10, alignSelf: 'flex-start', maxWidth: '100%',
+  },
+  stagedChipText: { fontSize: 12, fontWeight: '600', color: colors.textPrimary, flexShrink: 1 },
+  sendButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: colors.primary, borderRadius: radius.lg,
+    paddingVertical: spacing.md, marginTop: spacing.xs,
+  },
+  sendButtonText: { fontSize: 14, fontWeight: '700', color: colors.textOnPrimary },
 });

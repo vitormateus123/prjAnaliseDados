@@ -17,6 +17,9 @@ class ReportFieldIn(BaseModel):
     confidence: float | None = None
     source: str
     was_edited: bool = False
+    # De qual fonte o valor veio ('image'/'audio'/'text') quando a captura
+    # combinou mais de uma modalidade — None quando não se aplica.
+    input_source: str | None = None
 
 
 class CaptureIn(BaseModel):
@@ -56,6 +59,7 @@ class ReportFieldOut(BaseModel):
     confidence: float | None = None
     source: str
     was_edited: bool = False
+    input_source: str | None = None
 
 
 class CaptureOut(BaseModel):

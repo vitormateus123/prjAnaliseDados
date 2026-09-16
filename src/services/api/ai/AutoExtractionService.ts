@@ -1,68 +1,91 @@
 // src/services/api/ai/AutoExtractionService.ts
-// Fluxo novo (Fase 3): o app manda só a mídia, sem escolher formulário
-// antes — o backend classifica entre os templates existentes ou propõe um
-// novo, e já devolve os campos (ou itens) extraídos. Ver /extract/auto.
+// Fluxo automático: o app manda a captura inteira — uma ou mais fotos,
+// e/ou um áudio, e/ou um texto digitado, podendo combinar tudo — sem
+// escolher formulário antes. O backend classifica entre os templates
+// existentes ou propõe um novo, e já devolve os campos (ou itens) extraídos.
+// Ver POST /extract/auto.
 //
-// Mesma técnica de upload de ExtractionService.ts (FileSystem.uploadAsync
-// em vez de fetch+FormData) — ver comentário lá pra detalhes do porquê.
+// Vai como JSON com os arquivos em base64, e não como multipart com vários
+// arquivos binários: expo-file-system's uploadAsync só sobe UM arquivo por
+// chamada, e o FormData nativo do RN quebra com múltiplos file parts nesta
+// versão do Expo ("Unsupported FormDataPart implementation" — mesmo motivo
+// documentado em ExtractionService.ts). Base64 dentro de JSON funciona bem
+// para o tamanho de arquivo esperado aqui (fotos/áudios de poucos MB, com
+// limite de 10MB por arquivo já validado no backend).
 
 import * as FileSystem from 'expo-file-system/legacy';
 import { AutoExtractionResult } from '../../../types/reports';
-import { BASE_URL, apiUpload } from '../apiClient';
+import { apiFetch } from '../apiClient';
 
-export async function autoExtractFields(
-  mediaUri: string,
-  mediaType: 'voice' | 'photo',
-  mimeType: string,
-): Promise<AutoExtractionResult> {
-  try {
-    const uploadResult = await FileSystem.uploadAsync(`${BASE_URL}/extract/auto`, mediaUri, {
-      httpMethod: 'POST',
-      uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-      fieldName: 'file',
-      mimeType,
-      parameters: {
-        media_type: mediaType,
-      },
-    });
-
-    if (uploadResult.status < 200 || uploadResult.status >= 300) {
-      throw new Error(`Upload error ${uploadResult.status}: ${uploadResult.body}`);
-    }
-
-    return JSON.parse(uploadResult.body) as AutoExtractionResult;
-  } catch (error) {
-    return {
-      success: false,
-      template_id: '',
-      template_name: '',
-      template_is_new: false,
-      has_items: false,
-      fields: [],
-      items: [],
-      error: error instanceof Error ? error.message : 'Erro desconhecido',
-      retryable: true,
-    };
-  }
+interface MediaItemPayload {
+  data: string; // base64
+  mime_type: string;
 }
 
-// Texto digitado não tem arquivo pra subir — vai como campo de formulário
-// mesmo, via apiUpload (multipart simples, sem FileSystem.uploadAsync).
-export async function autoExtractFromText(text: string): Promise<AutoExtractionResult> {
+export interface StagedPhoto {
+  id: string;
+  uri: string;
+  mimeType: string;
+}
+
+export interface AutoExtractInput {
+  photos?: StagedPhoto[];
+  audioUri?: string | null;
+  audioMimeType?: string | null;
+  text?: string | null;
+}
+
+const EMPTY_RESULT_BASE: Omit<AutoExtractionResult, 'error' | 'retryable'> = {
+  success: false,
+  template_id: '',
+  template_name: '',
+  template_is_new: false,
+  has_items: false,
+  fields: [],
+  items: [],
+};
+
+async function toMediaItem(uri: string, mimeType: string): Promise<MediaItemPayload> {
+  const data = await FileSystem.readAsStringAsync(uri, { encoding: 'base64' });
+  return { data, mime_type: mimeType };
+}
+
+// Recebe uma combinação de fotos/áudio/texto anexados numa mesma captura e
+// manda tudo junto pro backend decidir o formulário e extrair os campos.
+export async function autoExtractCombined(input: AutoExtractInput): Promise<AutoExtractionResult> {
+  const photos = input.photos ?? [];
+  const hasAudio = !!input.audioUri;
+  const hasText = !!input.text && input.text.trim().length > 0;
+
+  if (photos.length === 0 && !hasAudio && !hasText) {
+    return {
+      ...EMPTY_RESULT_BASE,
+      error: 'Nenhuma informação anexada para enviar.',
+      retryable: false,
+    };
+  }
+
   try {
-    const formData = new FormData();
-    formData.append('media_type', 'text');
-    formData.append('text', text);
-    return await apiUpload<AutoExtractionResult>('/extract/auto', formData);
+    const [photoItems, audioItem] = await Promise.all([
+      Promise.all(photos.map((p) => toMediaItem(p.uri, p.mimeType))),
+      hasAudio
+        ? toMediaItem(input.audioUri as string, input.audioMimeType || 'audio/m4a')
+        : Promise.resolve(null),
+    ]);
+
+    const body = {
+      photos: photoItems,
+      audio: audioItem,
+      text: hasText ? (input.text as string).trim() : null,
+    };
+
+    return await apiFetch<AutoExtractionResult>('/extract/auto', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
   } catch (error) {
     return {
-      success: false,
-      template_id: '',
-      template_name: '',
-      template_is_new: false,
-      has_items: false,
-      fields: [],
-      items: [],
+      ...EMPTY_RESULT_BASE,
       error: error instanceof Error ? error.message : 'Erro desconhecido',
       retryable: true,
     };
