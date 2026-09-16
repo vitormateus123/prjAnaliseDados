@@ -8,7 +8,7 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import { AutoExtractionResult } from '../../../types/reports';
-import { BASE_URL } from '../apiClient';
+import { BASE_URL, apiUpload } from '../apiClient';
 
 export async function autoExtractFields(
   mediaUri: string,
@@ -31,6 +31,29 @@ export async function autoExtractFields(
     }
 
     return JSON.parse(uploadResult.body) as AutoExtractionResult;
+  } catch (error) {
+    return {
+      success: false,
+      template_id: '',
+      template_name: '',
+      template_is_new: false,
+      has_items: false,
+      fields: [],
+      items: [],
+      error: error instanceof Error ? error.message : 'Erro desconhecido',
+      retryable: true,
+    };
+  }
+}
+
+// Texto digitado não tem arquivo pra subir — vai como campo de formulário
+// mesmo, via apiUpload (multipart simples, sem FileSystem.uploadAsync).
+export async function autoExtractFromText(text: string): Promise<AutoExtractionResult> {
+  try {
+    const formData = new FormData();
+    formData.append('media_type', 'text');
+    formData.append('text', text);
+    return await apiUpload<AutoExtractionResult>('/extract/auto', formData);
   } catch (error) {
     return {
       success: false,

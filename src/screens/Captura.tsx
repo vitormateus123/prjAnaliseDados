@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, Alert, ActivityIndicator,
-  StyleSheet, Animated, Easing, SafeAreaView,
+  StyleSheet, Animated, Easing, SafeAreaView, TextInput,
 } from 'react-native';
 import { useNavigation, useRoute, NavigationProp, RouteProp } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
@@ -12,12 +12,12 @@ import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../App';
 import { extractFields } from '../services/api/ai/ExtractionService';
-import { autoExtractFields } from '../services/api/ai/AutoExtractionService';
+import { autoExtractFields, autoExtractFromText } from '../services/api/ai/AutoExtractionService';
 import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
 import { fetchFormTemplateById } from '../services/api/forms/TemplatesService';
 import { FormTemplate } from '../types/forms';
-import { Capture, Report } from '../types/reports';
+import { AutoExtractionResult, Capture, Report } from '../types/reports';
 import { buildReportFields, buildReportItems, emptyReportItem } from '../utils/reportBuilder';
 import { styles as shared } from '../styles';
 import { colors, gradients, radius, shadows, spacing } from '../theme';
@@ -37,6 +37,8 @@ export default function CapturaScreen() {
   const [loadingTemplate, setLoadingTemplate] = useState(!isAutoMode);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [textMode, setTextMode] = useState(false);
+  const [textValue, setTextValue] = useState('');
   const audio = useAudioCapture();
 
   // Pulso suave ao redor do botão de gravação enquanto o áudio está ativo —
@@ -125,7 +127,8 @@ export default function CapturaScreen() {
       // has_items=true, o(s) item(ns) ficam pra preencher manualmente.
       const result = await extractFields(mediaUri, mediaType, flatTemplateFields, mimeType);
       if (!result.success) {
-        Alert.alert('Extração falhou', `Detalhe: ${result.error ?? 'motivo desconhecido'}`);
+        if (__DEV__) console.warn('[Captura] extração falhou:', result.error);
+        Alert.alert('Extração falhou', 'Não conseguimos extrair os dados automaticamente. Você pode preencher manualmente.');
       }
       const items = activeTemplate.has_items ? [emptyReportItem(itemTemplateFields)] : [];
       await persistReport(
@@ -139,39 +142,31 @@ export default function CapturaScreen() {
           ? 'Falha ao processar gravação. Você pode preencher manualmente.'
           : 'Falha ao processar foto. Você pode preencher manualmente.';
       setError(message);
-      Alert.alert('Extração falhou', `${message}\n\nDetalhe: ${err instanceof Error ? err.message : String(err)}`);
+      if (__DEV__) console.warn('[Captura] falha na extração:', err);
+      Alert.alert('Extração falhou', message);
       const items = activeTemplate.has_items ? [emptyReportItem(itemTemplateFields)] : [];
       await persistReport(activeTemplate, capture, buildReportFields(flatTemplateFields, null), items, true);
     }
   }
 
   // ─── modo automático: IA decide o template ──────────────────────────────
-  async function processCaptureAuto(
+  // Comum a foto/voz (têm uma mídia real) e texto (não tem) — cada um só
+  // chama a extração de um jeito diferente e delega o resto pra cá.
+  async function finishAutoCapture(
     capture: Capture,
-    mediaUri: string,
-    mediaType: 'voice' | 'photo',
-    mimeType: string,
+    auto: AutoExtractionResult,
+    retry: () => void,
   ) {
-    const netState = await NetInfo.fetch();
-    if (!netState.isConnected) {
-      Alert.alert(
-        'Sem conexão',
-        'A identificação automática do formulário precisa de internet. Escolha um formulário manualmente para continuar offline.',
-      );
-      navigation.navigate('FormSelect');
-      return;
-    }
-
-    const auto = await autoExtractFields(mediaUri, mediaType, mimeType);
     if (!auto.success || !auto.template_id) {
+      if (__DEV__) console.warn('[Captura] extração automática falhou:', auto.error);
       Alert.alert(
         'Não foi possível identificar o formulário',
-        `Detalhe: ${auto.error ?? 'motivo desconhecido'}`,
+        'Tente novamente ou escolha o formulário manualmente.',
         [
           { text: 'Escolher manualmente', onPress: () => navigation.navigate('FormSelect') },
-          // Reprocessa a mesma mídia já capturada — nada foi salvo/navegado
+          // Reprocessa a mesma captura já feita — nada foi salvo/navegado
           // ainda nesse ponto, então tentar de novo aqui é seguro.
-          { text: 'Tentar de novo', onPress: () => processCapture(mediaUri, mediaType, mimeType) },
+          { text: 'Tentar de novo', onPress: retry },
         ],
       );
       return;
@@ -211,6 +206,41 @@ export default function CapturaScreen() {
     await persistReport(resolvedTemplate, capture, flatFields, items, false);
   }
 
+  async function processCaptureAuto(
+    capture: Capture,
+    mediaUri: string,
+    mediaType: 'voice' | 'photo',
+    mimeType: string,
+  ) {
+    const netState = await NetInfo.fetch();
+    if (!netState.isConnected) {
+      Alert.alert(
+        'Sem conexão',
+        'A identificação automática do formulário precisa de internet. Escolha um formulário manualmente para continuar offline.',
+      );
+      navigation.navigate('FormSelect');
+      return;
+    }
+
+    const auto = await autoExtractFields(mediaUri, mediaType, mimeType);
+    await finishAutoCapture(capture, auto, () => processCapture(mediaUri, mediaType, mimeType));
+  }
+
+  async function processCaptureAutoText(capture: Capture, text: string) {
+    const netState = await NetInfo.fetch();
+    if (!netState.isConnected) {
+      Alert.alert(
+        'Sem conexão',
+        'A identificação automática do formulário precisa de internet. Escolha um formulário manualmente para continuar offline.',
+      );
+      navigation.navigate('FormSelect');
+      return;
+    }
+
+    const auto = await autoExtractFromText(text);
+    await finishAutoCapture(capture, auto, () => processTextCapture(text));
+  }
+
   async function processCapture(
     mediaUri: string,
     mediaType: 'voice' | 'photo',
@@ -238,6 +268,42 @@ export default function CapturaScreen() {
     } finally {
       setIsProcessing(false);
     }
+  }
+
+  // Texto digitado só existe no modo automático por enquanto — no modo
+  // manual o endpoint clássico (/extract/) ainda não sabe lidar com texto.
+  async function processTextCapture(text: string) {
+    setIsProcessing(true);
+    setError(null);
+
+    const capture: Capture = {
+      id: Crypto.randomUUID(),
+      type: 'text',
+      mime_type: 'text/plain',
+      created_at: new Date().toISOString(),
+    };
+
+    try {
+      if (isAutoMode) {
+        await processCaptureAutoText(capture, text);
+      } else {
+        Alert.alert(
+          'Ainda não disponível',
+          'A entrada por texto funciona apenas na captura automática por enquanto. Use foto ou voz para este formulário.',
+        );
+      }
+    } finally {
+      setIsProcessing(false);
+    }
+  }
+
+  function handleTextSubmit() {
+    const trimmed = textValue.trim();
+    if (!trimmed) return;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setTextMode(false);
+    setTextValue('');
+    processTextCapture(trimmed);
   }
 
   async function handleToggleRecording() {
@@ -329,7 +395,7 @@ export default function CapturaScreen() {
           <Text style={shared.title}>{isAutoMode ? 'Nova captura' : template!.name}</Text>
           <Text style={shared.subtitle}>
             {isAutoMode
-              ? 'Grave por voz ou tire uma foto — a IA identifica o formulário certo'
+              ? 'Grave por voz, tire uma foto ou escreva — a IA identifica o formulário certo'
               : 'Grave por voz ou tire uma foto para começar'}
           </Text>
         </View>
@@ -340,56 +406,114 @@ export default function CapturaScreen() {
           </View>
         )}
 
-        <View style={local.stage}>
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              local.pulseRing,
-              { transform: [{ scale: pulseScale }], opacity: pulseOpacity },
-            ]}
-          />
-          <TouchableOpacity
-            onPress={handleToggleRecording}
-            disabled={isProcessing}
-            activeOpacity={0.85}
-            style={local.recordTouchable}
-          >
-            <LinearGradient
-              colors={recording ? ['#f87171', '#dc2626'] : gradients.primaryHero}
-              start={{ x: 0.1, y: 0 }}
-              end={{ x: 0.9, y: 1 }}
-              style={[local.recordButton, isProcessing && local.recordButtonDisabled]}
-            >
-              {isProcessing ? (
-                <ActivityIndicator size="large" color={colors.textOnPrimary} />
-              ) : (
-                <Ionicons name={recording ? 'stop' : 'mic'} size={44} color={colors.textOnPrimary} />
-              )}
-            </LinearGradient>
-          </TouchableOpacity>
-          <Text style={local.stageLabel}>
-            {isProcessing
-              ? 'Processando...'
-              : recording
-              ? 'Toque para parar'
-              : 'Toque para gravar'}
-          </Text>
-        </View>
+        {!textMode && (
+          <>
+            <View style={local.stage}>
+              <Animated.View
+                pointerEvents="none"
+                style={[
+                  local.pulseRing,
+                  { transform: [{ scale: pulseScale }], opacity: pulseOpacity },
+                ]}
+              />
+              <TouchableOpacity
+                onPress={handleToggleRecording}
+                disabled={isProcessing}
+                activeOpacity={0.85}
+                style={local.recordTouchable}
+              >
+                <LinearGradient
+                  colors={recording ? ['#f87171', '#dc2626'] : gradients.primaryHero}
+                  start={{ x: 0.1, y: 0 }}
+                  end={{ x: 0.9, y: 1 }}
+                  style={[local.recordButton, isProcessing && local.recordButtonDisabled]}
+                >
+                  {isProcessing ? (
+                    <ActivityIndicator size="large" color={colors.textOnPrimary} />
+                  ) : (
+                    <Ionicons name={recording ? 'stop' : 'mic'} size={44} color={colors.textOnPrimary} />
+                  )}
+                </LinearGradient>
+              </TouchableOpacity>
+              <Text style={local.stageLabel}>
+                {isProcessing
+                  ? 'Processando...'
+                  : recording
+                  ? 'Toque para parar'
+                  : 'Toque para gravar'}
+              </Text>
+            </View>
 
-        <TouchableOpacity
-          style={local.photoButton}
-          onPress={handlePhotoCapture}
-          disabled={isProcessing || recording}
-          activeOpacity={0.85}
-        >
-          <View style={local.photoIconWrap}>
-            <Ionicons name="camera" size={20} color={colors.primary} />
+            <TouchableOpacity
+              style={local.photoButton}
+              onPress={handlePhotoCapture}
+              disabled={isProcessing || recording}
+              activeOpacity={0.85}
+            >
+              <View style={local.photoIconWrap}>
+                <Ionicons name="camera" size={20} color={colors.primary} />
+              </View>
+              <Text style={local.photoButtonText}>
+                {isProcessing ? 'Processando...' : 'Adicionar foto'}
+              </Text>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[local.photoButton, local.photoButtonSpaced]}
+              onPress={() => setTextMode(true)}
+              disabled={isProcessing || recording}
+              activeOpacity={0.85}
+            >
+              <View style={local.photoIconWrap}>
+                <Ionicons name="create-outline" size={20} color={colors.primary} />
+              </View>
+              <Text style={local.photoButtonText}>Escrever</Text>
+              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          </>
+        )}
+
+        {textMode && (
+          <View style={local.textBox}>
+            <Text style={local.textBoxLabel}>Digite a informação</Text>
+            <TextInput
+              style={[shared.input, local.textInput]}
+              value={textValue}
+              onChangeText={setTextValue}
+              placeholder="Ex: contamos 40 caixas de parafusos no galpão 3..."
+              placeholderTextColor={colors.textMuted}
+              multiline
+              autoFocus
+              editable={!isProcessing}
+            />
+            <View style={local.textActions}>
+              <TouchableOpacity
+                style={local.textCancelButton}
+                onPress={() => { setTextMode(false); setTextValue(''); }}
+                disabled={isProcessing}
+                activeOpacity={0.85}
+              >
+                <Text style={local.textCancelText}>Cancelar</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  local.textSendButton,
+                  (!textValue.trim() || isProcessing) && local.recordButtonDisabled,
+                ]}
+                onPress={handleTextSubmit}
+                disabled={!textValue.trim() || isProcessing}
+                activeOpacity={0.85}
+              >
+                {isProcessing ? (
+                  <ActivityIndicator size="small" color={colors.textOnPrimary} />
+                ) : (
+                  <Text style={local.textSendText}>Enviar</Text>
+                )}
+              </TouchableOpacity>
+            </View>
           </View>
-          <Text style={local.photoButtonText}>
-            {isProcessing ? 'Processando...' : 'Adicionar foto'}
-          </Text>
-          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
-        </TouchableOpacity>
+        )}
 
         {isProcessing && (
           <View style={shared.loading}>
@@ -399,7 +523,7 @@ export default function CapturaScreen() {
           </View>
         )}
 
-        {isAutoMode && !isProcessing && (
+        {isAutoMode && !isProcessing && !textMode && (
           <TouchableOpacity
             onPress={() => navigation.navigate('FormSelect')}
             activeOpacity={0.7}
@@ -453,6 +577,25 @@ const local = StyleSheet.create({
     marginRight: spacing.md,
   },
   photoButtonText: { flex: 1, fontSize: 15, fontWeight: '700', color: colors.textPrimary },
+  photoButtonSpaced: { marginTop: spacing.md },
+  textBox: { marginBottom: spacing.md },
+  textBoxLabel: {
+    fontSize: 13, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.sm,
+  },
+  textInput: { minHeight: 120, textAlignVertical: 'top' },
+  textActions: { flexDirection: 'row', gap: spacing.md, marginTop: spacing.md },
+  textCancelButton: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    borderRadius: radius.lg, borderWidth: 1.5, borderColor: colors.border,
+    paddingVertical: spacing.lg,
+  },
+  textCancelText: { fontSize: 15, fontWeight: '700', color: colors.textSecondary },
+  textSendButton: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    borderRadius: radius.lg, backgroundColor: colors.primary,
+    paddingVertical: spacing.lg,
+  },
+  textSendText: { fontSize: 15, fontWeight: '700', color: colors.textOnPrimary },
   manualLink: { marginTop: spacing.xl, alignItems: 'center' },
   manualLinkText: { fontSize: 13, fontWeight: '600', color: colors.primary },
 });

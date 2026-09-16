@@ -245,26 +245,37 @@ def _catalog_entry_to_template_out(entry: TemplateCatalogEntry) -> FormTemplateO
 
 @router.post("/auto", response_model=AutoExtractResponse)
 async def extract_auto(
-    media_type: str = Form(...),   # 'voice' ou 'photo'
-    file: UploadFile = File(...),
+    media_type: str = Form(...),   # 'voice', 'photo' ou 'text'
+    file: UploadFile | None = File(None),
+    text: str | None = Form(None),  # usado quando media_type='text'
 ):
-    """Fluxo novo: o app manda só a mídia, sem escolher formulário antes.
-    1. transcreve (voz) ou usa a foto direto;
+    """Fluxo novo: o app manda só a mídia (ou texto digitado), sem escolher
+    formulário antes.
+    1. transcreve (voz), usa a foto direto, ou usa o texto digitado como está;
     2. pede pra IA classificar entre os templates existentes, ou propor um novo;
     3. se propôs novo, grava no banco (pending de revisão, mas já utilizável);
     4. extrai os campos (ou itens, se has_items=True) pro template resolvido."""
-    content = await _read_and_validate(file)
-
     try:
         transcript: str | None = None
         media_bytes: bytes | None = None
         mime_type: str | None = None
 
-        if media_type == "voice":
+        if media_type == "text":
+            if not text or not text.strip():
+                raise HTTPException(status_code=422, detail="Digite alguma informação antes de enviar.")
+            transcript = text.strip()
+        elif media_type == "voice":
+            if file is None:
+                raise HTTPException(status_code=422, detail="Áudio não enviado.")
+            content = await _read_and_validate(file)
             transcript = await groq_service.transcribe_audio(content, file.content_type)
         else:
+            if file is None:
+                raise HTTPException(status_code=422, detail="Arquivo não enviado.")
+            content = await _read_and_validate(file)
             media_bytes = content
             mime_type = file.content_type
+
 
         catalog = _load_catalog()
         classification = await gemini_service.classify_or_propose(

@@ -1,7 +1,7 @@
 // src/types/reports.ts
 
 export type ReportStatus = 'draft' | 'pending_sync' | 'synced' | 'error';
-export type CaptureType = 'voice' | 'photo' | 'manual';
+export type CaptureType = 'voice' | 'photo' | 'text' | 'manual';
 export type FieldSource = 'ai' | 'manual' | 'ai_edited';
 
 // Representa um valor de campo — usa discriminated union para segurança de tipos
