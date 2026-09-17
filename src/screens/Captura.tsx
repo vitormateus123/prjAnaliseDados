@@ -11,6 +11,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../App';
+import { KeyboardAvoidingScreen } from '../components/KeyboardAvoidingScreen';
 import { extractFields } from '../services/api/ai/ExtractionService';
 import { autoExtractCombined, StagedPhoto } from '../services/api/ai/AutoExtractionService';
 import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
@@ -435,6 +436,7 @@ export default function CapturaScreen() {
 
   return (
     <SafeAreaView style={local.safe}>
+      <KeyboardAvoidingScreen>
       <View style={local.content}>
         <View style={local.header}>
           <Text style={local.eyebrow}>{isAutoMode ? 'Captura inteligente' : template!.name.toUpperCase()}</Text>
@@ -632,6 +634,7 @@ export default function CapturaScreen() {
         )}
 
       </View>
+      </KeyboardAvoidingScreen>
     </SafeAreaView>
   );
 }

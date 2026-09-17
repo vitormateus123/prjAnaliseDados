@@ -113,3 +113,15 @@ export default function App() {
         />
         <Stack.Screen
           name="TemplatesRevisao"
+          component={TemplatesRevisaoScreen}
+          options={{ title: 'Formulários pendentes' }}
+        />
+        <Stack.Screen
+          name="GerenciarFormularios"
+          component={GerenciarFormulariosScreen}
+          options={{ title: 'Gerenciar formulários' }}
+        />
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+}

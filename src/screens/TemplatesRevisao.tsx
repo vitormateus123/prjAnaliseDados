@@ -9,6 +9,7 @@ import {
   StyleSheet, SafeAreaView, ActivityIndicator, Alert,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { KeyboardAvoidingScreen } from '../components/KeyboardAvoidingScreen';
 import { FormTemplate } from '../types/forms';
 import { fetchFormTemplates } from '../services/api/forms/TemplatesService';
 import {
@@ -137,6 +138,7 @@ export function TemplatesRevisaoScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      <KeyboardAvoidingScreen>
       <View style={styles.header}>
         <Text style={{ fontSize: 11, fontWeight: '800', color: colors.primary, letterSpacing: 1.2, marginBottom: 4 }}>
           REVISÃO DE IA
@@ -160,6 +162,7 @@ export function TemplatesRevisaoScreen() {
           data={pending}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.list}
+          keyboardShouldPersistTaps="handled"
           renderItem={({ item }) => {
             const isBusy = busyId === item.id;
             const isRenaming = renamingId === item.id;
@@ -281,6 +284,7 @@ export function TemplatesRevisaoScreen() {
           }}
         />
       )}
+      </KeyboardAvoidingScreen>
     </SafeAreaView>
   );
 }

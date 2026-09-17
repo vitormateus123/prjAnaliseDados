@@ -11,6 +11,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { RootStackParamList } from '../../App';
+import { KeyboardAvoidingScreen } from '../components/KeyboardAvoidingScreen';
 import { StorageService } from '../storage/StorageService';
 import { Report, ReportItem } from '../types/reports';
 import { DynamicFields } from '../components/DynamicFields';
@@ -121,7 +122,8 @@ export function RevisaoScreen() {
   return (
     <SafeAreaView style={styles.safe}>
       <LoadingOverlay visible={saving} message="Salvando..." />
-      <ScrollView contentContainerStyle={styles.container}>
+      <KeyboardAvoidingScreen>
+      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
         <Text style={styles.eyebrow}>{(report.context_label ?? report.form_template_name ?? 'INFORMAÇÃO').toUpperCase()}</Text>
         <Text style={styles.title}>Confira os dados extraídos</Text>
         <Text style={styles.subtitle}>Revise, corrija se necessário e salve o relatório.</Text>
@@ -163,6 +165,7 @@ export function RevisaoScreen() {
           <Text style={styles.buttonText}>Salvar relatório</Text>
         </TouchableOpacity>
       </ScrollView>
+      </KeyboardAvoidingScreen>
     </SafeAreaView>
   );
 }

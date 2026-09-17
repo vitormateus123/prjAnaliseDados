@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
+import { KeyboardAvoidingScreen } from '../components/KeyboardAvoidingScreen';
 import { FormTemplate, FormField, FieldType } from '../types/forms';
 import { fetchFormTemplates } from '../services/api/forms/TemplatesService';
 import {
@@ -348,10 +349,12 @@ export function GerenciarFormulariosScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
+      <KeyboardAvoidingScreen>
       <FlatList
         data={templates}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
+        keyboardShouldPersistTaps="handled"
         onRefresh={load}
         refreshing={false}
         ListHeaderComponent={
@@ -402,6 +405,7 @@ export function GerenciarFormulariosScreen() {
         }
         renderItem={renderTemplate}
       />
+      </KeyboardAvoidingScreen>
     </SafeAreaView>
   );
 }

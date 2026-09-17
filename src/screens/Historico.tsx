@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, TouchableOpacity, FlatList, ActivityIndicator,
-  StyleSheet, SafeAreaView,
+  View, Text, TouchableOpacity, SectionList, ActivityIndicator,
+  StyleSheet, SafeAreaView, TextInput, ScrollView,
 } from 'react-native';
 import { useNavigation, useFocusEffect, NavigationProp } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,7 +9,7 @@ import { StorageService } from '../storage/StorageService';
 import { fetchRemoteReports } from '../services/api/reports/ReportsService';
 import { syncReport } from '../services/sync/SyncService';
 import { NetworkError, ApiError } from '../services/api/apiClient';
-import { Report, FieldValue } from '../types/reports';
+import { Report, ReportField, FieldValue } from '../types/reports';
 import { RootStackParamList } from '../../App';
 import { colors, radius, shadows, spacing } from '../theme';
 
@@ -26,6 +26,18 @@ const STATUS_STYLE: Record<Report['status'], { bg: string; text: string; icon: k
   synced: { bg: colors.successSoft, text: colors.successStrong, icon: 'checkmark-circle' },
   error: { bg: colors.dangerSoft, text: colors.dangerStrong, icon: 'alert-circle' },
 };
+
+type StatusFilter = 'all' | Report['status'];
+
+// Ordem fixa da barra de filtros — "Todos" sempre primeiro, depois o que
+// mais importa no dia a dia (o que falta sincronizar) antes do que já foi.
+const FILTER_OPTIONS: { key: StatusFilter; label: string }[] = [
+  { key: 'all', label: 'Todos' },
+  { key: 'pending_sync', label: 'Pendente' },
+  { key: 'error', label: 'Erro' },
+  { key: 'draft', label: 'Rascunho' },
+  { key: 'synced', label: 'Sincronizado' },
+];
 
 function captureMeta(report: Report): { icon: keyof typeof Ionicons.glyphMap; bg: string; color: string } {
   const type = report.captures[0]?.type;
@@ -64,6 +76,56 @@ function fieldValueText(fv: FieldValue): string | null {
   }
 }
 
+/** Mesma conversão acima, mas sem truncar — usada só na busca, pra não
+ * perder um trecho do valor que ficou fora dos 40 caracteres de exibição. */
+function fieldRawText(fv: FieldValue): string {
+  switch (fv.type) {
+    case 'text':
+    case 'long_text':
+    case 'select':
+      return fv.value ?? '';
+    case 'number':
+    case 'decimal':
+      return fv.value != null ? String(fv.value) : '';
+    case 'date':
+      return fv.value ?? '';
+    case 'boolean':
+      return fv.value == null ? '' : fv.value ? 'sim' : 'não';
+    case 'multiselect':
+      return fv.value.join(' ');
+    default:
+      return '';
+  }
+}
+
+function fieldsRawText(fields: ReportField[]): string {
+  return fields.map((f) => fieldRawText(f.field_value)).filter(Boolean).join(' ');
+}
+
+/** Remove acentos e caixa pra busca não depender de digitar exatamente
+ * igual (ex: "endereco" tem que achar "endereço"). */
+function normalize(text: string): string {
+  return text
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .toLowerCase();
+}
+
+/** Todo texto de um relatório que faz sentido bater numa busca: título,
+ * template, status, valores de campos (incluindo os de dentro de itens) e
+ * o erro de sync, se houver. */
+function reportSearchableText(report: Report): string {
+  const parts = [
+    report.context_label ?? '',
+    report.form_template_name ?? '',
+    STATUS_LABEL[report.status],
+    fieldsRawText(report.fields),
+    ...report.items.map((item) => fieldsRawText(item.fields)),
+    report.sync_error ?? '',
+  ];
+  return normalize(parts.join(' '));
+}
+
 /** Linha de resumo do card — os 2 primeiros campos preenchidos, na ordem em
  * que foram extraídos (que costuma colocar o mais identificador primeiro,
  * tipo número/nome). É o que diferencia duas capturas do mesmo tipo, já
@@ -87,6 +149,54 @@ function describeRemoteError(err: unknown): string {
   return err instanceof Error ? err.message : 'Falha desconhecida ao buscar relatórios do servidor.';
 }
 
+// ─── agrupamento por data ────────────────────────────────────────────────
+
+type ReportSection = { title: string; data: Report[] };
+
+const SECTION_ORDER = ['Hoje', 'Ontem', 'Esta semana', 'Este mês', 'Mais antigos'] as const;
+
+function startOfDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+function sectionTitleFor(createdAtIso: string): (typeof SECTION_ORDER)[number] {
+  const diffDays = Math.round((startOfDay(new Date()) - startOfDay(new Date(createdAtIso))) / 86_400_000);
+  if (diffDays <= 0) return 'Hoje';
+  if (diffDays === 1) return 'Ontem';
+  if (diffDays < 7) return 'Esta semana';
+  if (diffDays < 30) return 'Este mês';
+  return 'Mais antigos';
+}
+
+function groupByDate(reports: Report[]): ReportSection[] {
+  // created_at é sempre um ISO string gerado localmente (Crypto.randomUUID
+  // + new Date().toISOString() em Captura.tsx), então dá pra ordenar direto
+  // por ele sem se preocupar com a ordem em que ficaram salvos no storage.
+  const sorted = [...reports].sort(
+    (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+  const buckets = new Map<string, Report[]>();
+  for (const report of sorted) {
+    const title = sectionTitleFor(report.created_at);
+    if (!buckets.has(title)) buckets.set(title, []);
+    buckets.get(title)!.push(report);
+  }
+  return SECTION_ORDER.filter((title) => buckets.has(title)).map((title) => ({
+    title,
+    data: buckets.get(title)!,
+  }));
+}
+
+/** Data do card: só a hora quando o agrupamento já diz "Hoje"/"Ontem" (não
+ * repete o óbvio), data completa nos demais casos. */
+function formatCardDate(iso: string, sectionTitle: string): string {
+  const d = new Date(iso);
+  if (sectionTitle === 'Hoje' || sectionTitle === 'Ontem') {
+    return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  }
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+}
+
 export default function HistoricoScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [reports, setReports] = useState<Report[]>([]);
@@ -97,6 +207,9 @@ export default function HistoricoScreen() {
   // estava local, sem nenhuma pista do porquê os dados do Supabase não
   // apareciam. Agora fica visível como um aviso no topo da lista.
   const [remoteError, setRemoteError] = useState<string | null>(null);
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
 
   const refreshList = useCallback(async (isRefresh = false) => {
     isRefresh ? setRefreshing(true) : setLoading(true);
@@ -117,7 +230,7 @@ export default function HistoricoScreen() {
     }
 
     const merged = await StorageService.getAllReports();
-    setReports([...merged].reverse());
+    setReports(merged);
     isRefresh ? setRefreshing(false) : setLoading(false);
   }, []);
 
@@ -131,6 +244,31 @@ export default function HistoricoScreen() {
       refreshList();
     }, [refreshList]),
   );
+
+  const counts = useMemo(() => {
+    const c: Record<StatusFilter, number> = {
+      all: reports.length, draft: 0, pending_sync: 0, error: 0, synced: 0,
+    };
+    for (const r of reports) c[r.status]++;
+    return c;
+  }, [reports]);
+
+  const filteredReports = useMemo(() => {
+    const query = normalize(searchQuery.trim());
+    return reports.filter((r) => {
+      if (statusFilter !== 'all' && r.status !== statusFilter) return false;
+      if (!query) return true;
+      return reportSearchableText(r).includes(query);
+    });
+  }, [reports, searchQuery, statusFilter]);
+
+  const sections = useMemo(() => groupByDate(filteredReports), [filteredReports]);
+  const hasActiveFilters = searchQuery.trim().length > 0 || statusFilter !== 'all';
+
+  function clearFilters() {
+    setSearchQuery('');
+    setStatusFilter('all');
+  }
 
   function handleOpenReport(report: Report) {
     navigation.navigate('Revisao', { reportId: report.id });
@@ -208,17 +346,85 @@ export default function HistoricoScreen() {
     );
   }
 
+  const searchAndFilters = (
+    <View style={local.toolbar}>
+      <View style={local.searchBar}>
+        <Ionicons name="search" size={18} color={colors.textMuted} />
+        <TextInput
+          style={local.searchInput}
+          placeholder="Buscar por título, campo, template..."
+          placeholderTextColor={colors.textMuted}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          returnKeyType="search"
+          autoCorrect={false}
+          autoCapitalize="none"
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={8}>
+            <Ionicons name="close-circle" size={18} color={colors.textMuted} />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={local.filterRow}
+      >
+        {FILTER_OPTIONS.map((opt) => {
+          const active = statusFilter === opt.key;
+          return (
+            <TouchableOpacity
+              key={opt.key}
+              style={[local.filterChip, active && local.filterChipActive]}
+              onPress={() => setStatusFilter(opt.key)}
+              activeOpacity={0.8}
+            >
+              <Text style={[local.filterChipText, active && local.filterChipTextActive]}>
+                {opt.label} ({counts[opt.key]})
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </ScrollView>
+    </View>
+  );
+
+  const listEmptyComponent = (
+    <View style={local.noResults}>
+      <Ionicons name="search-outline" size={32} color={colors.textMuted} />
+      <Text style={local.emptyTitle}>Nada encontrado</Text>
+      <Text style={local.emptyText}>Tente outro termo de busca ou remova os filtros.</Text>
+      <TouchableOpacity style={local.clearFiltersButton} onPress={clearFilters} activeOpacity={0.85}>
+        <Text style={local.clearFiltersText}>Limpar filtros</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
   return (
     <SafeAreaView style={local.safe}>
       {header}
-      <FlatList
-        data={reports}
+      <SectionList
+        sections={sections}
         keyExtractor={(item) => item.id}
         contentContainerStyle={local.list}
+        stickySectionHeadersEnabled={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="on-drag"
         onRefresh={() => refreshList(true)}
         refreshing={refreshing}
-        ListHeaderComponent={remoteErrorBanner || undefined}
-        renderItem={({ item }) => {
+        ListHeaderComponent={
+          <>
+            {searchAndFilters}
+            {remoteErrorBanner}
+          </>
+        }
+        ListEmptyComponent={hasActiveFilters ? listEmptyComponent : null}
+        renderSectionHeader={({ section }) => (
+          <Text style={local.sectionHeader}>{section.title}</Text>
+        )}
+        renderItem={({ item, section }) => {
           const meta = captureMeta(item);
           const status = STATUS_STYLE[item.status];
           return (
@@ -237,9 +443,7 @@ export default function HistoricoScreen() {
                   </Text>
                   <Text style={local.cardSummary} numberOfLines={1}>{reportSummary(item)}</Text>
                   <Text style={local.cardDate}>
-                    {new Date(item.created_at).toLocaleDateString('pt-BR', {
-                      day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
-                    })}
+                    {formatCardDate(item.created_at, section.title)}
                     {item.captures.length > 1 ? ` · ${item.captures.length} capturas combinadas` : ''}
                   </Text>
                 </View>
@@ -315,6 +519,27 @@ const local = StyleSheet.create({
     ...shadows.sm,
   },
   newButtonText: { color: colors.textOnPrimary, fontWeight: '700', fontSize: 14, marginLeft: 4 },
+  toolbar: { paddingHorizontal: spacing.xxl, marginBottom: spacing.md, gap: spacing.sm },
+  searchBar: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    backgroundColor: colors.surface, borderRadius: radius.lg,
+    borderWidth: 1.5, borderColor: colors.border,
+    paddingHorizontal: spacing.md, height: 44,
+  },
+  searchInput: { flex: 1, fontSize: 14, color: colors.textPrimary, padding: 0 },
+  filterRow: { gap: spacing.sm, paddingRight: spacing.xxl },
+  filterChip: {
+    backgroundColor: colors.surface, borderRadius: radius.pill,
+    borderWidth: 1.5, borderColor: colors.border,
+    paddingVertical: 7, paddingHorizontal: 14,
+  },
+  filterChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
+  filterChipText: { fontSize: 13, fontWeight: '700', color: colors.textSecondary },
+  filterChipTextActive: { color: colors.textOnPrimary },
+  sectionHeader: {
+    fontSize: 12, fontWeight: '800', color: colors.textMuted, letterSpacing: 0.6,
+    textTransform: 'uppercase', marginBottom: spacing.sm, marginTop: spacing.xs,
+  },
   warningBanner: {
     flexDirection: 'row', backgroundColor: colors.warningSoft, borderRadius: radius.md,
     padding: spacing.md, marginHorizontal: spacing.xxl, marginBottom: spacing.md,
@@ -322,13 +547,19 @@ const local = StyleSheet.create({
   warningTitle: { fontSize: 12, fontWeight: '700', color: colors.warningStrong },
   warningDetail: { fontSize: 12, color: colors.warningStrong, marginTop: 2 },
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.xxxl },
+  noResults: { alignItems: 'center', paddingHorizontal: spacing.xxxl, paddingTop: spacing.xxxl },
   emptyIconWrap: {
     width: 72, height: 72, borderRadius: 36, backgroundColor: colors.primaryLight,
     alignItems: 'center', justifyContent: 'center', marginBottom: spacing.lg,
   },
   emptyTitle: { fontSize: 18, fontWeight: '800', color: colors.textPrimary, marginBottom: 6, textAlign: 'center' },
   emptyText: { fontSize: 14, color: colors.textSecondary, textAlign: 'center', lineHeight: 20 },
-  list: { paddingHorizontal: spacing.xxl, paddingBottom: spacing.xxxl, gap: spacing.md },
+  clearFiltersButton: {
+    marginTop: spacing.lg, borderRadius: radius.pill, borderWidth: 1.5, borderColor: colors.primary,
+    paddingVertical: 10, paddingHorizontal: 20,
+  },
+  clearFiltersText: { fontSize: 13, fontWeight: '700', color: colors.primary },
+  list: { paddingHorizontal: spacing.xxl, paddingBottom: spacing.xxxl },
   card: {
     backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg,
     borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md,
