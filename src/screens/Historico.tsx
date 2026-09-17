@@ -231,7 +231,7 @@ export default function HistoricoScreen() {
                 <View style={[local.captureIcon, { backgroundColor: meta.bg }]}>
                   <Ionicons name={meta.icon} size={20} color={meta.color} />
                 </View>
-                <View style={{ flex: 1 }}>
+                <View style={local.cardInfo}>
                   <Text style={local.cardTitle} numberOfLines={1}>
                     {item.context_label || item.form_template_name || 'Informação recebida'}
                   </Text>
@@ -334,17 +334,21 @@ const local = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md,
     ...shadows.sm,
   },
-  cardRow: { flexDirection: 'row', alignItems: 'center' },
+  cardRow: { flexDirection: 'row', alignItems: 'flex-start' },
   captureIcon: {
     width: 42, height: 42, borderRadius: radius.md,
     alignItems: 'center', justifyContent: 'center', marginRight: spacing.md,
   },
+  // minWidth: 0 é o que faz o texto truncar em vez de empurrar/apertar o
+  // selo de status vizinho — sem isso, um View com flex:1 ainda reserva
+  // espaço pelo conteúdo não-truncado em vez do espaço disponível de fato.
+  cardInfo: { flex: 1, minWidth: 0, marginRight: spacing.md },
   cardTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary },
   cardSummary: { fontSize: 13, color: colors.textSecondary, marginTop: 2, fontWeight: '500' },
   cardDate: { fontSize: 12, color: colors.textMuted, marginTop: 3, fontWeight: '500' },
   statusPill: {
     flexDirection: 'row', alignItems: 'center', borderRadius: radius.pill,
-    paddingHorizontal: 10, paddingVertical: 5, gap: 4,
+    paddingHorizontal: 10, paddingVertical: 5, gap: 4, flexShrink: 0,
   },
   statusText: { fontSize: 11, fontWeight: '700' },
   syncError: { fontSize: 12, color: colors.dangerStrong, marginTop: spacing.sm },
