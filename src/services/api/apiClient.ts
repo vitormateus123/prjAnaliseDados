@@ -28,6 +28,12 @@ if (__DEV__) {
 }
 
 const DEFAULT_TIMEOUT_MS = 15000;
+// /extract/* passa por IA (Gemini/Groq) — isso sozinho já pode levar vários
+// segundos. Some o "cold start" do plano gratuito do Render (o serviço
+// dorme depois de ficar parado e pode levar 30-50s pra acordar na próxima
+// chamada) e 15s corta a requisição bem no meio disso. Upload usa um
+// timeout mais folgado por causa disso.
+const UPLOAD_TIMEOUT_MS = 60000;
 
 /** Servidor respondeu, mas com status de erro. */
 export class ApiError extends Error {
@@ -51,18 +57,28 @@ export class NetworkError extends Error {
   }
 }
 
-async function request(url: string, init: RequestInit): Promise<Response> {
+async function request(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (err) {
     if (__DEV__) console.error('[apiClient] falha de rede em', url, err);
-    const isAbort = err instanceof Error && err.name === 'AbortError';
+    // No React Native, um fetch abortado por AbortController às vezes chega
+    // aqui como "Fetch request has been canceled", não com name='AbortError'
+    // — sem esse fallback, um timeout real era relatado como "não foi
+    // possível conectar", escondendo a causa de verdade.
+    const isAbort =
+      err instanceof Error &&
+      (err.name === 'AbortError' || /cancel/i.test(err.message));
     throw new NetworkError(
       isAbort
-        ? `O servidor não respondeu em ${DEFAULT_TIMEOUT_MS / 1000}s (${BASE_URL}).`
+        ? `O servidor demorou mais de ${timeoutMs / 1000}s pra responder (${BASE_URL}). Se o backend estiver no plano gratuito do Render, ele pode estar "acordando" — tente de novo em alguns segundos.`
         : `Não foi possível conectar ao servidor (${BASE_URL}).`,
       err,
     );
@@ -96,7 +112,11 @@ export async function apiFetch<T>(path: string, options?: RequestInit): Promise<
 
 export async function apiUpload<T>(path: string, formData: FormData): Promise<T> {
   // Não defina Content-Type manualmente: o RN precisa gerar o boundary do multipart.
-  const response = await request(`${BASE_URL}${path}`, { method: 'POST', body: formData });
+  const response = await request(
+    `${BASE_URL}${path}`,
+    { method: 'POST', body: formData },
+    UPLOAD_TIMEOUT_MS,
+  );
 
   if (!response.ok) await parseError(response);
   return response.json() as Promise<T>;
