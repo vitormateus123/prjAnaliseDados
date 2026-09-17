@@ -4,7 +4,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
-  ScrollView, Alert, SafeAreaView, ActivityIndicator,
+  ScrollView, Alert, SafeAreaView, ActivityIndicator, TextInput,
 } from 'react-native';
 import { useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -40,6 +40,8 @@ export function RevisaoScreen() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [newFieldLabel, setNewFieldLabel] = useState('');
+  const [newFieldValue, setNewFieldValue] = useState('');
 
   useEffect(() => {
     StorageService.getReportById(reportId).then((found) => {
@@ -72,6 +74,31 @@ export function RevisaoScreen() {
     setReport((prev) => (prev ? { ...prev, items } : prev));
   }
 
+  function handleRemoveField(key: string) {
+    setReport((prev) => prev ? { ...prev, fields: prev.fields.filter((field) => field.key !== key) } : prev);
+  }
+
+  function handleAddField() {
+    const label = newFieldLabel.trim();
+    if (!label) return;
+    const keyBase = label.toLocaleLowerCase('pt-BR').normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'informacao';
+    setReport((prev) => {
+      if (!prev) return prev;
+      const key = prev.fields.some((field) => field.key === keyBase) ? `${keyBase}_${Date.now()}` : keyBase;
+      return {
+        ...prev,
+        fields: [...prev.fields, {
+          form_field_id: null, key, label,
+          field_value: { type: 'text', value: newFieldValue },
+          source: 'manual', was_edited: true, dynamic_type: 'text',
+        }],
+      };
+    });
+    setNewFieldLabel('');
+    setNewFieldValue('');
+  }
+
   async function handleSave() {
     if (!report) return;
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -95,7 +122,7 @@ export function RevisaoScreen() {
     <SafeAreaView style={styles.safe}>
       <LoadingOverlay visible={saving} message="Salvando..." />
       <ScrollView contentContainerStyle={styles.container}>
-        <Text style={styles.eyebrow}>{report.form_template_name.toUpperCase()}</Text>
+        <Text style={styles.eyebrow}>{(report.context_label ?? report.form_template_name ?? 'INFORMAÇÃO').toUpperCase()}</Text>
         <Text style={styles.title}>Confira os dados extraídos</Text>
         <Text style={styles.subtitle}>Revise, corrija se necessário e salve o relatório.</Text>
 
@@ -112,8 +139,19 @@ export function RevisaoScreen() {
           <DynamicFields
             fields={report.fields}
             onChange={handleChange}
+            onRemove={handleRemoveField}
             showEmptyMessage={false}
           />
+          <View style={styles.addFieldArea}>
+            <Text style={styles.addFieldTitle}>Adicionar informação</Text>
+            <TextInput style={styles.addFieldInput} value={newFieldLabel} onChangeText={setNewFieldLabel}
+              placeholder="Nome da informação" placeholderTextColor={colors.textMuted} />
+            <TextInput style={styles.addFieldInput} value={newFieldValue} onChangeText={setNewFieldValue}
+              placeholder="Valor (opcional)" placeholderTextColor={colors.textMuted} />
+            <TouchableOpacity style={styles.addFieldButton} onPress={handleAddField} disabled={!newFieldLabel.trim()}>
+              <Text style={styles.addFieldButtonText}>Adicionar campo</Text>
+            </TouchableOpacity>
+          </View>
         </View>
 
         {report.items && report.items.length > 0 && (
@@ -156,6 +194,11 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, marginBottom: spacing.lg,
     ...shadows.sm,
   },
+  addFieldArea: { borderTopWidth: 1, borderTopColor: colors.border, marginTop: spacing.md, paddingTop: spacing.md, gap: spacing.sm },
+  addFieldTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
+  addFieldInput: { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 10, color: colors.textPrimary, fontSize: 14 },
+  addFieldButton: { alignSelf: 'flex-start', backgroundColor: colors.primaryLight, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 9 },
+  addFieldButtonText: { color: colors.primary, fontWeight: '700', fontSize: 13 },
   button: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
     backgroundColor: colors.success, paddingVertical: spacing.lg,

@@ -1,4 +1,4 @@
-import { Text, TextInput, View } from 'react-native';
+import { Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { ReportField } from '../types/reports';
 import { fieldValueToString } from '../utils/fieldValue';
@@ -9,12 +9,14 @@ import { ConfidenceBadge } from './ConfidenceBadge';
 interface DynamicFieldsProps {
   fields: ReportField[];
   onChange: (key: string, rawValue: string) => void;
+  onRemove?: (key: string) => void;
   showEmptyMessage?: boolean;
 }
 
 export function DynamicFields({
   fields,
   onChange,
+  onRemove,
   showEmptyMessage = false,
 }: DynamicFieldsProps) {
   return (
@@ -38,9 +40,14 @@ export function DynamicFields({
         return (
           <View key={field.key} style={styles.field}>
             <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 8 }}>
-              <Text style={[styles.label, { marginBottom: 0 }]}>{field.label}</Text>
+              <Text style={[styles.label, { marginBottom: 0, flex: 1 }]}>{field.label}</Text>
               {isFromAI && <ConfidenceBadge confidence={field.confidence} />}
               {wasEdited && <Ionicons name="create-outline" size={13} color={colors.textMuted} />}
+              {onRemove && (
+                <TouchableOpacity onPress={() => onRemove(field.key)} hitSlop={8}>
+                  <Ionicons name="trash-outline" size={16} color={colors.danger} />
+                </TouchableOpacity>
+              )}
             </View>
             <TextInput
               style={[styles.input, isMultiline && { minHeight: 96, textAlignVertical: 'top' }]}

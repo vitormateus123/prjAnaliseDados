@@ -1,5 +1,7 @@
 // src/types/reports.ts
 
+import type { FieldType } from './forms';
+
 export type ReportStatus = 'draft' | 'pending_sync' | 'synced' | 'error';
 export type CaptureType = 'voice' | 'photo' | 'text' | 'manual';
 export type FieldSource = 'ai' | 'manual' | 'ai_edited';
@@ -21,7 +23,9 @@ export type FieldValue =
 export type InputSource = 'image' | 'audio' | 'text';
 
 export interface ReportField {
-  form_field_id: string;
+  // Campos propostos/adicionados durante a revisão não precisam existir em
+  // nenhum template. O template, quando existir, é apenas uma referência.
+  form_field_id?: string | null;
   key: string;
   label: string;
   field_value: FieldValue;
@@ -29,6 +33,7 @@ export interface ReportField {
   source: FieldSource;
   was_edited: boolean;
   input_source?: InputSource | null;
+  dynamic_type?: FieldType;
 }
 
 export interface Capture {
@@ -100,8 +105,10 @@ export interface ReportItem {
 
 export interface Report {
   id: string;                  // UUID gerado localmente
-  form_template_id: string;
-  form_template_name: string;  // cache para exibição no histórico
+  form_template_id?: string | null;
+  form_template_name?: string | null;  // cache para exibição no histórico
+  context_label?: string | null;
+  context_type?: string | null;
   status: ReportStatus;
   fields: ReportField[];
   items: ReportItem[];         // só preenchido quando o template tem has_items=true

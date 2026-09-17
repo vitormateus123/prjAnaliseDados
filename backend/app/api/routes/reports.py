@@ -3,13 +3,16 @@ import uuid as uuid_lib
 from fastapi import APIRouter, HTTPException
 from postgrest.exceptions import APIError as PostgrestAPIError
 from app.services.supabase_service import get_client
-from app.schemas.reports import ReportIn, ReportOut, ReportFieldOut, CaptureOut, ReportSyncResult
+from app.schemas.reports import (
+    ReportIn, ReportOut, ReportFieldOut, CaptureOut, ReportItemOut, ReportSyncResult,
+)
 
 router = APIRouter()
 
 _REPORT_SELECT = (
     "*, form_templates(name), "
     "report_fields(*, form_fields(key,label,type)), "
+    "report_items(*, report_item_fields(*, form_fields(key,label,type))), "
     "captures(*)"
 )
 
@@ -89,6 +92,24 @@ def _row_to_report_out(row: dict) -> ReportOut:
             )
         )
 
+    items: list[ReportItemOut] = []
+    for item in row.get("report_items") or []:
+        item_fields: list[ReportFieldOut] = []
+        for rf in item.get("report_item_fields") or []:
+            form_field = rf.get("form_fields") or {}
+            field_type = form_field.get("type") or "text"
+            item_fields.append(ReportFieldOut(
+                form_field_id=rf.get("form_field_id"),
+                key=form_field.get("key") or rf.get("id", ""),
+                label=form_field.get("label") or "",
+                field_value=_columns_to_field_value(rf, field_type),
+                confidence=rf.get("confidence"),
+                source=rf.get("source", "manual"),
+                input_source=rf.get("input_source"),
+                was_edited=rf.get("was_edited", False),
+            ))
+        items.append(ReportItemOut(id=item["id"], fields=item_fields))
+
     captures = [
         CaptureOut(
             id=c["id"],
@@ -109,6 +130,7 @@ def _row_to_report_out(row: dict) -> ReportOut:
         context_type=row.get("context_type"),
         status=row["status"],
         fields=fields,
+        items=items,
         captures=captures,
         created_at=row["created_at"],
         updated_at=row["updated_at"],
@@ -162,7 +184,8 @@ def create_report(report: ReportIn):
             raise HTTPException(status_code=500, detail="Falha ao gravar o relatorio.")
 
         if report.fields:
-            field_rows = []
+            guided_rows = []
+            dynamic_rows = []
             for f in report.fields:
                 row = {
                     "report_id": report.id,
@@ -176,12 +199,45 @@ def create_report(report: ReportIn):
                     "dynamic_type": f.dynamic_type,
                     **_field_value_to_columns(f.field_value),
                 }
-                field_rows.append(row)
+                (guided_rows if f.form_field_id else dynamic_rows).append(row)
 
-            if field_rows:
+            if guided_rows:
                 supabase.table("report_fields").upsert(
-                    field_rows, on_conflict="report_id,form_field_id"
+                    guided_rows, on_conflict="report_id,form_field_id"
                 ).execute()
+            if dynamic_rows:
+                # Campos livres não possuem a chave única dos campos guiados.
+                # Substituímos somente essa parte do relatório para manter a
+                # sincronização idempotente sem duplicar dados a cada retry.
+                supabase.table("report_fields").delete().eq("report_id", report.id).is_(
+                    "form_field_id", "null"
+                ).execute()
+                supabase.table("report_fields").insert(dynamic_rows).execute()
+
+        # Itens repetidos são parte do relatório, não apenas um detalhe da UI.
+        # Recriar somente a coleção de itens deste relatório também propaga
+        # remoções feitas na revisão e mantém retries idempotentes.
+        supabase.table("report_items").delete().eq("report_id", report.id).execute()
+        for position, item in enumerate(report.items):
+            supabase.table("report_items").insert({
+                "id": item.id,
+                "report_id": report.id,
+                "position": position,
+            }).execute()
+            item_field_rows = [
+                {
+                    "report_item_id": item.id,
+                    "form_field_id": field.form_field_id,
+                    "confidence": field.confidence,
+                    "source": field.source,
+                    "input_source": field.input_source,
+                    "was_edited": field.was_edited,
+                    **_field_value_to_columns(field.field_value),
+                }
+                for field in item.fields
+            ]
+            if item_field_rows:
+                supabase.table("report_item_fields").insert(item_field_rows).execute()
 
         if report.captures:
             capture_rows = [

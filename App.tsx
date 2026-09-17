@@ -4,7 +4,6 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 
-import { FormSelectScreen } from './src/screens/FormSelectScreen';
 import CapturaScreen from './src/screens/Captura';
 import { RevisaoScreen } from './src/screens/RevisaoScreen';
 import HistoricoScreen from './src/screens/Historico';
@@ -22,7 +21,8 @@ export type MainTabParamList = {
 // Pilha raiz do app
 export type RootStackParamList = {
   Principal: { screen?: keyof MainTabParamList } | undefined;
-  FormSelect: undefined;
+  // Parâmetro mantido só para compatibilidade com relatórios antigos. A UI
+  // principal nunca oferece escolha de formulário.
   Captura: { formTemplateId?: string } | undefined;
   Revisao: { reportId: string; extractionFailed?: boolean };
   TemplatesRevisao: undefined;
@@ -90,11 +90,6 @@ export default function App() {
           name="Principal"
           component={MainTabs}
           options={{ headerShown: false }}
-        />
-        <Stack.Screen
-          name="FormSelect"
-          component={FormSelectScreen}
-          options={{ title: 'Novo Relatório' }}
         />
         <Stack.Screen
           name="Captura"

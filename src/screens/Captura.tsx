@@ -22,14 +22,8 @@ import { buildReportFields, buildReportItems, emptyReportItem } from '../utils/r
 import { styles as shared } from '../styles';
 import { colors, gradients, radius, shadows, spacing } from '../theme';
 
-// A tela funciona em dois modos.
-// - Auto (padrão, sem formTemplateId): o usuário anexa foto(s), áudio e/ou
-//   texto — em qualquer combinação — e só então envia; a IA decide qual
-//   template usar (ou propõe um novo) a partir de TUDO que foi anexado
-//   junto. Nada aqui pressupõe que uma modalidade "pertence" a um domínio.
-// - Manual (formTemplateId presente, vindo da FormSelectScreen): mantido
-//   pra quem prefere escolher o formulário antes — usa o /extract/ clássico,
-//   uma mídia por vez, envio imediato (fluxo mais simples, sem combinação).
+// A entrada principal é sempre livre: foto(s), áudio e texto podem ser
+// combinados e a IA decide internamente como estruturar a informação.
 export default function CapturaScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const route = useRoute<RouteProp<RootStackParamList, 'Captura'>>();
@@ -57,6 +51,23 @@ export default function CapturaScreen() {
     setStagedPhotos([]);
     setStagedAudio(null);
     setStagedText('');
+  }
+
+  async function persistUnstructuredReport(captures: Capture[]) {
+    const now = new Date().toISOString();
+    const report: Report = {
+      id: Crypto.randomUUID(),
+      context_label: 'Informação recebida',
+      status: 'draft',
+      fields: [],
+      items: [],
+      captures,
+      created_at: now,
+      updated_at: now,
+    };
+    await StorageService.upsertReport(report);
+    clearStaged();
+    navigation.navigate('Revisao', { reportId: report.id, extractionFailed: true });
   }
 
   // Pulso suave ao redor do botão de gravação enquanto o áudio está ativo —
@@ -202,15 +213,12 @@ export default function CapturaScreen() {
   }
 
   // ─── modo automático: usuário anexa foto(s)/áudio/texto e a IA decide ──
-  function finishFailureAlert(retry: () => void) {
+  function finishFailureAlert(captures: Capture[], retry: () => void) {
     Alert.alert(
-      'Não foi possível identificar o formulário',
-      'Tente de novo, descreva de outro jeito ou escolha o formulário manualmente.',
+      'Não conseguimos organizar automaticamente',
+      'Você pode tentar de novo, complementar a informação ou revisar e preencher os dados manualmente.',
       [
-        { text: 'Escolher manualmente', onPress: () => navigation.navigate('FormSelect') },
-        // Mantém o que já foi anexado — só abre a caixa de texto pra
-        // complementar/reformular em vez de forçar a lista técnica de
-        // formulários.
+        { text: 'Revisar manualmente', onPress: () => { void persistUnstructuredReport(captures); } },
         { text: 'Descrever de outro jeito', onPress: () => { setTextValue(stagedText); setTextMode(true); } },
         { text: 'Tentar de novo', onPress: retry },
       ],
@@ -224,7 +232,7 @@ export default function CapturaScreen() {
   ) {
     if (!auto.success || !auto.template_id) {
       if (__DEV__) console.warn('[Captura] extração automática falhou:', auto.error);
-      finishFailureAlert(retry);
+      finishFailureAlert(captures, retry);
       return;
     }
 
@@ -245,17 +253,13 @@ export default function CapturaScreen() {
 
     if (auto.template_is_new) {
       Alert.alert(
-        'Novo tipo de formulário identificado',
-        `A IA criou o formulário "${resolvedTemplate.name}" para este tipo de conteúdo. Ele já pode ser usado, mas ainda não foi revisado — confira em Ajustes > Revisar formulários.`,
+        'Informação organizada',
+        'Encontramos uma nova forma de organizar esta informação. Confira os dados antes de salvar.',
       );
     } else if (auto.new_field_keys && auto.new_field_keys.length > 0) {
-      const addedLabels = resolvedTemplate.fields
-        .filter((f) => auto.new_field_keys!.includes(f.key))
-        .map((f) => f.label)
-        .join(', ');
       Alert.alert(
-        'Novos campos identificados',
-        `A IA percebeu que "${resolvedTemplate.name}" estava sem: ${addedLabels}. Eles foram adicionados ao formulário — remova em Ajustes > Gerenciar formulários se não fizerem sentido.`,
+        'Mais informações encontradas',
+        'Incluímos informações adicionais para você revisar antes de salvar.',
       );
     }
 
@@ -265,19 +269,6 @@ export default function CapturaScreen() {
 
   async function submitStagedCapture() {
     if (!hasStaged) return;
-
-    const netState = await NetInfo.fetch();
-    if (!netState.isConnected) {
-      Alert.alert(
-        'Sem conexão',
-        'A identificação automática do formulário precisa de internet. Escolha um formulário manualmente para continuar offline.',
-      );
-      navigation.navigate('FormSelect');
-      return;
-    }
-
-    setIsProcessing(true);
-    setError(null);
 
     const now = new Date().toISOString();
     const captures: Capture[] = [
@@ -292,6 +283,19 @@ export default function CapturaScreen() {
         id: Crypto.randomUUID(), type: 'text' as const, mime_type: 'text/plain', created_at: now,
       }] : []),
     ];
+
+    const netState = await NetInfo.fetch();
+    if (!netState.isConnected) {
+      Alert.alert(
+        'Sem conexão',
+        'Sua informação será salva no dispositivo. Você poderá preenchê-la agora e ela será sincronizada quando houver conexão.',
+        [{ text: 'Continuar', onPress: () => { void persistUnstructuredReport(captures); } }],
+      );
+      return;
+    }
+
+    setIsProcessing(true);
+    setError(null);
 
     try {
       const auto = await autoExtractCombined({
@@ -627,15 +631,6 @@ export default function CapturaScreen() {
           </View>
         )}
 
-        {isAutoMode && !isProcessing && !textMode && (
-          <TouchableOpacity
-            onPress={() => navigation.navigate('FormSelect')}
-            activeOpacity={0.7}
-            style={local.manualLink}
-          >
-            <Text style={local.manualLinkText}>Prefere escolher o formulário manualmente?</Text>
-          </TouchableOpacity>
-        )}
       </View>
     </SafeAreaView>
   );

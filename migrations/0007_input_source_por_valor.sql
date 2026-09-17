@@ -12,9 +12,9 @@
 -- ============================================================
 
 ALTER TABLE report_fields
-  ADD COLUMN input_source TEXT
+  ADD COLUMN IF NOT EXISTS input_source TEXT
     CHECK (input_source IN ('image', 'audio', 'text'));
 
 ALTER TABLE report_item_fields
-  ADD COLUMN input_source TEXT
+  ADD COLUMN IF NOT EXISTS input_source TEXT
     CHECK (input_source IN ('image', 'audio', 'text'));

@@ -27,6 +27,11 @@ class CaptureIn(BaseModel):
     created_at: str
 
 
+class ReportItemIn(BaseModel):
+    id: str
+    fields: list[ReportFieldIn] = []
+
+
 class ReportIn(BaseModel):
     id: str
     form_template_id: Optional[str] = None   # opcional no modo descoberta
@@ -35,6 +40,7 @@ class ReportIn(BaseModel):
     context_type: Optional[str] = None        # ex: "nota_fiscal"
     status: str
     fields: list[ReportFieldIn] = []
+    items: list[ReportItemIn] = []
     captures: list[CaptureIn] = []
     created_at: str
     updated_at: str
@@ -62,6 +68,11 @@ class CaptureOut(BaseModel):
     created_at: str
 
 
+class ReportItemOut(BaseModel):
+    id: str
+    fields: list[ReportFieldOut] = []
+
+
 class ReportOut(BaseModel):
     id: str
     form_template_id: Optional[str] = None
@@ -70,6 +81,7 @@ class ReportOut(BaseModel):
     context_type: Optional[str] = None
     status: str
     fields: list[ReportFieldOut] = []
+    items: list[ReportItemOut] = []
     captures: list[CaptureOut] = []
     created_at: str
     updated_at: str
