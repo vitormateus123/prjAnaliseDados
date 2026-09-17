@@ -1,4 +1,6 @@
 // src/services/sync/SyncService.ts
+import { AppState, AppStateStatus } from 'react-native';
+import NetInfo from '@react-native-community/netinfo';
 import { StorageService } from '../../storage/StorageService';
 import { apiFetch, NetworkError } from '../api/apiClient';
 import { Report } from '../../types/reports';
@@ -61,4 +63,72 @@ export async function syncPendingReports(): Promise<{ success: number; failed: n
   }
 
   return { success, failed };
+}
+
+// ─── sincronização automática em segundo plano ──────────────────────────
+//
+// Igual ao syncOne acima: não usamos NetInfo.isConnected como portão, só
+// como GATILHO pra tentar. Quem decide de verdade se deu certo é a
+// tentativa real de rede dentro de syncOne/apiFetch. Por isso os disparos
+// abaixo são "deixa eu tentar", nunca "confirmei que há internet".
+const AUTO_SYNC_INTERVAL_MS = 2 * 60 * 1000; // rede de campo é instável — reforço periódico
+const DEBOUNCE_MS = 1500; // várias mudanças de rede seguidas viram uma tentativa só
+
+let isSyncing = false;
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+async function attemptAutoSync(): Promise<void> {
+  if (isSyncing) return;
+  isSyncing = true;
+  try {
+    await syncPendingReports();
+  } catch (err) {
+    // Nunca deixa um erro de sync automático quebrar o app — o usuário só
+    // vê o resultado no card do relatório (status/sync_error), sem alertas.
+    if (__DEV__) console.error('[SyncService] auto-sync falhou', err);
+  } finally {
+    isSyncing = false;
+  }
+}
+
+function scheduleAutoSync(): void {
+  if (debounceTimer) clearTimeout(debounceTimer);
+  debounceTimer = setTimeout(attemptAutoSync, DEBOUNCE_MS);
+}
+
+/**
+ * Liga a sincronização automática em segundo plano — sem botão, sem
+ * depender do usuário lembrar. Chamar UMA VEZ na raiz do app (App.tsx).
+ *
+ * Gatilhos que disparam uma tentativa:
+ * - qualquer evento do NetInfo (troca de wifi, sinal voltou, etc.)
+ * - o app voltar pro primeiro plano (o dispositivo pode ter saído da área
+ *   sem sinal e voltado enquanto estava em segundo plano)
+ * - um intervalo de segurança, caso os dois gatilhos acima não disparem
+ *   por algum motivo
+ *
+ * Retorna uma função de cleanup (útil sobretudo em testes; no app real o
+ * componente raiz normalmente não desmonta).
+ */
+export function startAutoSync(): () => void {
+  const netUnsubscribe = NetInfo.addEventListener(() => {
+    scheduleAutoSync();
+  });
+
+  const appStateSubscription = AppState.addEventListener('change', (state: AppStateStatus) => {
+    if (state === 'active') scheduleAutoSync();
+  });
+
+  const interval = setInterval(attemptAutoSync, AUTO_SYNC_INTERVAL_MS);
+
+  // Tenta uma vez já na inicialização — cobre o caso de relatórios
+  // pendentes de uma sessão anterior que ficaram sem sincronizar.
+  scheduleAutoSync();
+
+  return () => {
+    netUnsubscribe();
+    appStateSubscription.remove();
+    clearInterval(interval);
+    if (debounceTimer) clearTimeout(debounceTimer);
+  };
 }

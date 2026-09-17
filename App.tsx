@@ -1,4 +1,5 @@
 // App.tsx
+import { useEffect } from 'react';
 import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
@@ -10,6 +11,7 @@ import HistoricoScreen from './src/screens/Historico';
 import AjustesScreen from './src/screens/Ajustes';
 import { TemplatesRevisaoScreen } from './src/screens/TemplatesRevisao';
 import { GerenciarFormulariosScreen } from './src/screens/GerenciarFormularios';
+import { startAutoSync } from './src/services/sync/SyncService';
 import { colors } from './src/theme';
 
 // Tabs da tela "Principal"
@@ -83,6 +85,14 @@ function MainTabs() {
 }
 
 export default function App() {
+  // Liga a sincronização automática em segundo plano uma única vez, pra
+  // valer em qualquer tela do app (não só quando o usuário está em
+  // Ajustes). Ver SyncService.startAutoSync para os gatilhos.
+  useEffect(() => {
+    const stopAutoSync = startAutoSync();
+    return stopAutoSync;
+  }, []);
+
   return (
     <NavigationContainer theme={navTheme}>
       <Stack.Navigator screenOptions={screenHeaderOptions}>
@@ -103,15 +113,3 @@ export default function App() {
         />
         <Stack.Screen
           name="TemplatesRevisao"
-          component={TemplatesRevisaoScreen}
-          options={{ title: 'Formulários pendentes' }}
-        />
-        <Stack.Screen
-          name="GerenciarFormularios"
-          component={GerenciarFormulariosScreen}
-          options={{ title: 'Gerenciar formulários' }}
-        />
-      </Stack.Navigator>
-    </NavigationContainer>
-  );
-}
