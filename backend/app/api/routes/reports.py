@@ -1,5 +1,7 @@
 # backend/app/api/routes/reports.py
+import logging
 import uuid as uuid_lib
+from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from postgrest.exceptions import APIError as PostgrestAPIError
 from app.services.supabase_service import get_client
@@ -8,6 +10,7 @@ from app.schemas.reports import (
 )
 
 router = APIRouter()
+logger = logging.getLogger("reports")
 
 _REPORT_SELECT = (
     "*, form_templates(name), "
@@ -16,6 +19,12 @@ _REPORT_SELECT = (
     "captures(*)"
 )
 
+# Formato esperado (ISO) primeiro; DD/MM/YYYY como fallback porque, apesar
+# do prompt do Gemini pedir YYYY-MM-DD, às vezes ele devolve no formato
+# brasileiro mesmo — e a coluna DATE do Postgres não aceita nenhum dos dois
+# fora do padrão, rejeitando com "date/time field value out of range".
+_DATE_FORMATS = ("%Y-%m-%d", "%d/%m/%Y")
+
 
 def _is_valid_uuid(value: str) -> bool:
     try:
@@ -23,6 +32,22 @@ def _is_valid_uuid(value: str) -> bool:
         return True
     except (ValueError, AttributeError, TypeError):
         return False
+
+
+def _normalize_date(value: str | None) -> str | None:
+    """Aceita ISO ou DD/MM/YYYY e devolve sempre ISO. Se não reconhecer
+    nenhum dos dois formatos, devolve None em vez de deixar a string bruta
+    quebrar o INSERT inteiro — o valor original fica preservado em
+    value_text (ver _field_value_to_columns) pra não se perder."""
+    if not value:
+        return None
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    logger.warning("Data em formato não reconhecido, gravando sem value_date: %r", value)
+    return None
 
 
 def _field_value_to_columns(field_value: dict) -> dict:
@@ -46,7 +71,10 @@ def _field_value_to_columns(field_value: dict) -> dict:
     elif field_type == "boolean":
         columns["value_boolean"] = value
     elif field_type == "date":
-        columns["value_date"] = value
+        normalized = _normalize_date(value)
+        columns["value_date"] = normalized
+        if value and not normalized:
+            columns["value_text"] = value  # preserva o valor bruto pra não perder a informação
     elif field_type == "multiselect":
         columns["value_json"] = value
     else:
