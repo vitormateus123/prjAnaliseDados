@@ -24,7 +24,16 @@
       "permissions": [
         "android.permission.RECORD_AUDIO",
         "android.permission.CAMERA",
-        "android.permission.READ_MEDIA_IMAGES"
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.CAMERA",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"
       ],
       "predictiveBackGestureEnabled": false
     },
@@ -35,7 +44,16 @@
       "expo-audio"
     ],
     "extra": {
-      "apiUrl": "http://localhost:8000"
+      "apiUrl": "http://localhost:8000",
+      "eas": {
+        "projectId": "a1921378-bb43-4d5e-bb8c-a128b92d5c42"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "sdkVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/a1921378-bb43-4d5e-bb8c-a128b92d5c42"
     }
   }
 }
