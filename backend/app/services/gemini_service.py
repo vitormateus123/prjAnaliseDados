@@ -8,9 +8,10 @@ from app.schemas.discovery import DiscoveredField, DiscoveryResult
 
 _client = genai.Client(api_key=settings.gemini_api_key)
 
-# gemini-2.0-flash-lite: modelo gratuito mais leve, suficiente para extração
-# estruturada.
-_MODEL = "gemini-2.0-flash-lite"
+# Nome do modelo vem de settings (env GEMINI_MODEL) — NÃO hardcode aqui.
+# O gemini-2.0-flash-lite foi desativado pelo Google em 01/06/2026 (ver
+# core/config.py); manter o valor fixo faria toda extração falhar com 404.
+_MODEL = settings.gemini_model
 
 # ─── MODO GUIADO (com template) ─────────────────────────────────────────────
 
@@ -295,3 +296,119 @@ async def discover_and_extract_multimodal(
             error=str(e),
             mode="discovery",
         )
+
+
+# ─── MODO AUTOMÁTICO (classifica contra templates existentes ou propõe um novo) ─
+# Usado pelo endpoint POST /extract/auto. Numa única chamada, a IA decide se
+# a captura se encaixa em algum form_template já cadastrado (devolvendo só o
+# id + eventuais campos que faltavam nele) ou se nenhum serve e um template
+# novo deve ser proposto — e já extrai os valores encontrados.
+
+_AUTO_PROMPT = """Você é um assistente que recebe uma captura de campo (foto e/ou texto — que pode ser transcrição de áudio ou digitado) e decide como estruturá-la dentro de um sistema de formulários dinâmico.
+
+FORMULÁRIOS JÁ CADASTRADOS (catálogo, em JSON):
+{catalog_json}
+
+SEU TRABALHO, EM UMA ÚNICA RESPOSTA:
+1. Decida se o conteúdo se encaixa em algum formulário do catálogo acima (match="existing") ou se nenhum deles serve e um formulário novo precisa ser criado (match="new"). Prefira reaproveitar um formulário existente sempre que o conteúdo for do mesmo tipo, mesmo que falte algum campo.
+2. Se match="existing": preencha "template_id" com o id exato do formulário escolhido (copiado do catálogo). Se esse formulário não tiver algum campo essencial para o conteúdo (ex.: uma nota fiscal sem campo "emissor"), liste esse(s) campo(s) em "suggested_fields" no mesmo formato dos campos do catálogo — isso NÃO é motivo para propor um formulário novo. Deixe "new_template" com name="" e fields=[].
+3. Se match="new": preencha "new_template" com nome, descrição, has_items e os campos propostos. Deixe "template_id"="" e "suggested_fields"=[].
+4. Em "fields", extraia os valores encontrados no conteúdo para os campos de nível de relatório (do template escolhido + suggested_fields, ou do novo template) — apenas os que NÃO são is_item_field.
+5. Se o formulário (existente ou novo) tiver has_items=true, retorne também "items": uma lista onde cada item tem seus próprios "fields", contendo só os campos marcados is_item_field. Se has_items=false, retorne "items": [].
+
+REGRAS:
+- Nunca invente informações que não estão no conteúdo.
+- Para valores não encontrados, use string vazia "".
+- confidence reflete sua certeza: 1.0 = certeza absoluta, 0.5 = incerto.
+- "source" de cada campo extraído indica de onde veio o valor predominantemente: "image", "audio", "text", ou "" se não fizer sentido diferenciar.
+- Tipos válidos para campos: text, long_text, number, decimal, date, boolean, select.
+- Chaves (key) em snake_case, sem espaços. Rótulos (label) em português, claros para um usuário leigo.
+- Retorne APENAS o JSON pedido, sem texto adicional.
+"""
+
+_AUTO_FIELD_SPEC_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "key": {"type": "STRING"},
+        "label": {"type": "STRING"},
+        "type": {"type": "STRING"},
+        "extraction_hint": {"type": "STRING"},
+        "options": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "is_item_field": {"type": "BOOLEAN"},
+    },
+    "required": ["key", "label", "type"],
+}
+
+_AUTO_EXTRACTED_FIELD_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "key": {"type": "STRING"},
+        "value": {"type": "STRING"},
+        "confidence": {"type": "NUMBER"},
+        "source": {"type": "STRING"},
+    },
+    "required": ["key", "value", "confidence"],
+}
+
+_AUTO_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "match": {"type": "STRING"},
+        "template_id": {"type": "STRING"},
+        "new_template": {
+            "type": "OBJECT",
+            "properties": {
+                "name": {"type": "STRING"},
+                "description": {"type": "STRING"},
+                "has_items": {"type": "BOOLEAN"},
+                "fields": {"type": "ARRAY", "items": _AUTO_FIELD_SPEC_SCHEMA},
+            },
+            "required": ["name", "fields"],
+        },
+        "suggested_fields": {"type": "ARRAY", "items": _AUTO_FIELD_SPEC_SCHEMA},
+        "fields": {"type": "ARRAY", "items": _AUTO_EXTRACTED_FIELD_SCHEMA},
+        "items": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {"fields": {"type": "ARRAY", "items": _AUTO_EXTRACTED_FIELD_SCHEMA}},
+                "required": ["fields"],
+            },
+        },
+    },
+    "required": ["match", "template_id", "new_template", "suggested_fields", "fields", "items"],
+}
+
+
+def _auto_config() -> types.GenerateContentConfig:
+    return types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=_AUTO_RESPONSE_SCHEMA,
+    )
+
+
+async def classify_and_extract(
+    catalog: list[dict],
+    photos: list[tuple[bytes, str]],
+    text: str | None,
+) -> dict:
+    """Classifica a captura contra o catálogo de formulários (ou propõe um
+    novo) e já extrai os valores encontrados — tudo numa única chamada.
+    Retorna o dict cru (ver _AUTO_RESPONSE_SCHEMA); quem chama
+    (routes/extract.py) decide o que fazer no banco a partir dele."""
+    prompt = _AUTO_PROMPT.format(catalog_json=json.dumps(catalog, ensure_ascii=False))
+    if text:
+        prompt += f"\n\nCONTEÚDO DE ÁUDIO/TEXTO (transcrição ou texto digitado):\n{text}"
+    if photos:
+        prompt += "\n\nALÉM DISSO, analise a(s) imagem(ns) enviada(s) junto com esta mensagem."
+
+    contents: list = [prompt]
+    for media_bytes, mime_type in photos:
+        contents.append(types.Part.from_bytes(data=media_bytes, mime_type=mime_type))
+
+    response = await _client.aio.models.generate_content(
+        model=_MODEL,
+        contents=contents,
+        config=_auto_config(),
+    )
+    return json.loads(response.text)
