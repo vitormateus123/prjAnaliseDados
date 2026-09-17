@@ -202,9 +202,17 @@ def create_report(report: ReportIn):
                 (guided_rows if f.form_field_id else dynamic_rows).append(row)
 
             if guided_rows:
-                supabase.table("report_fields").upsert(
-                    guided_rows, on_conflict="report_id,form_field_id"
+                # Não dá pra usar upsert com on_conflict aqui: a UNIQUE
+                # (report_id, form_field_id) virou um índice PARCIAL na
+                # migration 0005 (só se aplica quando form_field_id não é
+                # nulo, pra permitir vários campos dinâmicos com NULL) — o
+                # PostgREST não consegue casar ON CONFLICT com um índice
+                # parcial. Mesmo padrão "apaga e reinsere" dos dynamic_rows
+                # logo abaixo resolve e mantém o retry idempotente.
+                supabase.table("report_fields").delete().eq("report_id", report.id).not_.is_(
+                    "form_field_id", "null"
                 ).execute()
+                supabase.table("report_fields").insert(guided_rows).execute()
             if dynamic_rows:
                 # Campos livres não possuem a chave única dos campos guiados.
                 # Substituímos somente essa parte do relatório para manter a
