@@ -9,7 +9,7 @@ import { StorageService } from '../storage/StorageService';
 import { fetchRemoteReports } from '../services/api/reports/ReportsService';
 import { syncReport } from '../services/sync/SyncService';
 import { NetworkError, ApiError } from '../services/api/apiClient';
-import { Report } from '../types/reports';
+import { Report, FieldValue } from '../types/reports';
 import { RootStackParamList } from '../../App';
 import { colors, radius, shadows, spacing } from '../theme';
 
@@ -31,7 +31,54 @@ function captureMeta(report: Report): { icon: keyof typeof Ionicons.glyphMap; bg
   const type = report.captures[0]?.type;
   if (type === 'voice') return { icon: 'mic', bg: colors.primaryLight, color: colors.primary };
   if (type === 'photo') return { icon: 'camera', bg: colors.accentSoft, color: colors.accent };
-  return { icon: 'create', bg: colors.infoSoft, color: colors.infoStrong };
+  if (type === 'text') return { icon: 'create-outline', bg: colors.infoSoft, color: colors.infoStrong };
+  return { icon: 'document-text-outline', bg: colors.infoSoft, color: colors.infoStrong };
+}
+
+function truncate(text: string, max = 40): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** Converte um FieldValue (union discriminada) num texto curto pra exibir
+ * — mesma lógica em todo lugar que mostra um valor, sem repetir por tipo. */
+function fieldValueText(fv: FieldValue): string | null {
+  switch (fv.type) {
+    case 'text':
+    case 'long_text':
+    case 'select':
+      return fv.value?.trim() ? truncate(fv.value.trim()) : null;
+    case 'number':
+    case 'decimal':
+      return fv.value != null ? String(fv.value) : null;
+    case 'date': {
+      if (!fv.value) return null;
+      const [y, m, d] = fv.value.split('-');
+      return d && m && y ? `${d}/${m}/${y}` : fv.value;
+    }
+    case 'boolean':
+      return fv.value == null ? null : fv.value ? 'Sim' : 'Não';
+    case 'multiselect':
+      return fv.value.length ? truncate(fv.value.join(', ')) : null;
+    default:
+      return null;
+  }
+}
+
+/** Linha de resumo do card — os 2 primeiros campos preenchidos, na ordem em
+ * que foram extraídos (que costuma colocar o mais identificador primeiro,
+ * tipo número/nome). É o que diferencia duas capturas do mesmo tipo, já
+ * que o título sozinho ("Nota Fiscal") é igual pras duas. */
+function reportSummary(report: Report): string {
+  const parts: string[] = [];
+  for (const f of report.fields) {
+    const text = fieldValueText(f.field_value);
+    if (text) parts.push(text);
+    if (parts.length === 2) break;
+  }
+  if (report.items.length > 0) {
+    parts.push(`${report.items.length} ${report.items.length === 1 ? 'item' : 'itens'}`);
+  }
+  return parts.length ? parts.join(' · ') : 'Sem informações preenchidas ainda — toque para revisar';
 }
 
 function describeRemoteError(err: unknown): string {
@@ -185,11 +232,15 @@ export default function HistoricoScreen() {
                   <Ionicons name={meta.icon} size={20} color={meta.color} />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={local.cardTitle} numberOfLines={1}>{item.form_template_name}</Text>
+                  <Text style={local.cardTitle} numberOfLines={1}>
+                    {item.context_label || item.form_template_name || 'Informação recebida'}
+                  </Text>
+                  <Text style={local.cardSummary} numberOfLines={1}>{reportSummary(item)}</Text>
                   <Text style={local.cardDate}>
                     {new Date(item.created_at).toLocaleDateString('pt-BR', {
                       day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
                     })}
+                    {item.captures.length > 1 ? ` · ${item.captures.length} capturas combinadas` : ''}
                   </Text>
                 </View>
                 <View style={[local.statusPill, { backgroundColor: status.bg }]}>
@@ -289,7 +340,8 @@ const local = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center', marginRight: spacing.md,
   },
   cardTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary },
-  cardDate: { fontSize: 12, color: colors.textMuted, marginTop: 2, fontWeight: '500' },
+  cardSummary: { fontSize: 13, color: colors.textSecondary, marginTop: 2, fontWeight: '500' },
+  cardDate: { fontSize: 12, color: colors.textMuted, marginTop: 3, fontWeight: '500' },
   statusPill: {
     flexDirection: 'row', alignItems: 'center', borderRadius: radius.pill,
     paddingHorizontal: 10, paddingVertical: 5, gap: 4,
