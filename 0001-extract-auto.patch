@@ -1,0 +1,440 @@
+From 2f779665d69b6e9de83fa868f9a09f569eb0e79d Mon Sep 17 00:00:00 2001
+From: Vitor Mateus <vitormateus123@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 01:03:50 +0000
+Subject: [PATCH] =?UTF-8?q?backend:=20implementa=20POST=20/extract/auto=20?=
+ =?UTF-8?q?(classifica=C3=A7=C3=A3o=20+=20cria=C3=A7=C3=A3o/extens=C3=A3o?=
+ =?UTF-8?q?=20de=20template=20+=20extra=C3=A7=C3=A3o=20numa=20chamada)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Adiciona gemini_service.classify_and_extract(): recebe o catálogo de
+  formulários ativos + foto(s)/texto e devolve, numa única chamada ao
+  Gemini, se o conteúdo se encaixa num template existente (com eventuais
+  campos faltantes) ou se um novo template deve ser proposto, já com os
+  valores extraídos.
+- Adiciona a rota POST /extract/auto em extract.py, que o app já chamava
+  (AutoExtractionService.ts) mas não existia no backend.
+- Corrige _MODEL para usar settings.gemini_model em vez do nome fixo
+  'gemini-2.0-flash-lite', já documentado como desativado pelo Google.
+---
+ backend/app/api/routes/extract.py      | 249 ++++++++++++++++++++++++-
+ backend/app/services/gemini_service.py | 123 +++++++++++-
+ 2 files changed, 367 insertions(+), 5 deletions(-)
+
+diff --git a/backend/app/api/routes/extract.py b/backend/app/api/routes/extract.py
+index b825e1c..f63b529 100644
+--- a/backend/app/api/routes/extract.py
++++ b/backend/app/api/routes/extract.py
+@@ -1,16 +1,26 @@
+ # backend/app/api/routes/extract.py
++import base64
+ import json
+ import logging
+ import time
+ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+ from typing import Optional
+-from app.schemas.extraction import ExtractResponse, FieldHint
++from app.schemas.extraction import (
++    ExtractResponse, FieldHint, ExtractedField,
++    AutoExtractRequest, AutoExtractResponse, ExtractedItem,
++)
+ from app.schemas.discovery import DiscoveryResult, DiscoveredField
+ from app.services import gemini_service, groq_service
++from app.services.supabase_service import get_client
++from app.api.routes.templates import FIELD_TYPES
++from app.core.config import settings
+ 
+ logger = logging.getLogger("extract")
+ router = APIRouter()
+ 
++_AUTO_MODEL = settings.gemini_model
++MAX_AUTO_FILE_SIZE = 10 * 1024 * 1024  # 10 MB por arquivo (mesmo limite do /extract/ classico)
++
+ ALLOWED_MIME = {"image/jpeg", "image/png", "audio/m4a", "audio/mpeg", "audio/wav"}
+ MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+ 
+@@ -154,4 +164,239 @@ async def extract_from_raw_text(
+             success=False, fields=[], provider="gemini",
+             model="gemini-2.0-flash-lite", error=str(e), mode="discovery",
+         )
+-    return result
+\ No newline at end of file
++    return result
++
++
++# ENDPOINT AUTOMATICO (sem template escolhido pelo usuario)
++# Recebe foto(s)/audio/texto de uma MESMA captura (montados aos poucos na
++# CapturaScreen) e devolve tanto a classificacao quanto os valores extraidos
++# numa unica chamada. Ver AutoExtractionService.ts no app.
++
++def _safe_field_type(raw_type: str | None) -> str:
++    return raw_type if raw_type in FIELD_TYPES else "text"
++
++
++def _fetch_template_catalog() -> list[dict]:
++    """Formularios ativos + campos, no formato que o prompt de classificacao
++    espera (ver TemplateCatalogEntry/TemplateCatalogField)."""
++    supabase = get_client()
++    templates_resp = supabase.table("form_templates").select("*").eq("active", True).execute()
++    templates = templates_resp.data or []
++
++    catalog: list[dict] = []
++    for t in templates:
++        fields_resp = (
++            supabase.table("form_fields")
++            .select("*")
++            .eq("form_template_id", t["id"])
++            .order("position")
++            .execute()
++        )
++        catalog.append({
++            "id": t["id"],
++            "name": t["name"],
++            "description": t.get("description"),
++            "has_items": t.get("has_items", False),
++            "fields": [
++                {
++                    "key": f["key"],
++                    "label": f["label"],
++                    "type": f["type"],
++                    "extraction_hint": f.get("extraction_hint"),
++                    "options": f.get("options"),
++                    "is_item_field": f.get("is_item_field", False),
++                }
++                for f in (fields_resp.data or [])
++            ],
++        })
++    return catalog
++
++
++def _create_template_from_proposal(new_template: dict) -> tuple[str, str, bool]:
++    """Cria o template que a IA propos (nenhum do catalogo servia). Fica como
++    source='ai_generated' + review_status='pending' — ja utilizavel de
++    imediato, mas listado em TemplatesRevisaoScreen para um humano confirmar."""
++    supabase = get_client()
++    has_items = bool(new_template.get("has_items", False))
++
++    template_resp = (
++        supabase.table("form_templates")
++        .insert({
++            "name": new_template.get("name") or "Formulário sem nome",
++            "description": new_template.get("description") or None,
++            "version": 1,
++            "active": True,
++            "has_items": has_items,
++            "source": "ai_generated",
++            "review_status": "pending",
++        })
++        .execute()
++    )
++    if not template_resp.data:
++        raise RuntimeError("Falha ao criar o formulário proposto pela IA.")
++    template_row = template_resp.data[0]
++
++    seen_keys: set[str] = set()
++    field_rows = []
++    for i, f in enumerate(new_template.get("fields") or []):
++        key = f.get("key")
++        if not key or key in seen_keys:
++            continue
++        seen_keys.add(key)
++        field_rows.append({
++            "form_template_id": template_row["id"],
++            "key": key,
++            "label": f.get("label") or key,
++            "type": _safe_field_type(f.get("type")),
++            "required": False,
++            "position": i,
++            "extraction_hint": f.get("extraction_hint"),
++            "options": f.get("options"),
++            "is_item_field": bool(f.get("is_item_field", False)),
++            "source": "ai_generated",
++        })
++    if field_rows:
++        fields_resp = supabase.table("form_fields").insert(field_rows).execute()
++        if not fields_resp.data:
++            raise RuntimeError("Formulário criado, mas falhou ao gravar os campos propostos.")
++
++    return template_row["id"], template_row["name"], has_items
++
++
++def _add_suggested_fields(template_id: str, suggested_fields: list[dict]) -> list[str]:
++    """Preenche lacunas num template JA existente — ignora keys que ja
++    existirem nele (evita duplicar em capturas repetidas do mesmo tipo)."""
++    if not suggested_fields:
++        return []
++    supabase = get_client()
++    existing = (
++        supabase.table("form_fields")
++        .select("key,position")
++        .eq("form_template_id", template_id)
++        .execute()
++    ).data or []
++    existing_keys = {f["key"] for f in existing}
++    next_position = max((f["position"] for f in existing), default=-1) + 1
++
++    new_keys: list[str] = []
++    rows = []
++    for f in suggested_fields:
++        key = f.get("key")
++        if not key or key in existing_keys:
++            continue
++        rows.append({
++            "form_template_id": template_id,
++            "key": key,
++            "label": f.get("label") or key,
++            "type": _safe_field_type(f.get("type")),
++            "required": False,
++            "position": next_position,
++            "extraction_hint": f.get("extraction_hint"),
++            "options": f.get("options"),
++            "is_item_field": bool(f.get("is_item_field", False)),
++            "source": "ai_generated",
++        })
++        existing_keys.add(key)
++        new_keys.append(key)
++        next_position += 1
++
++    if rows:
++        supabase.table("form_fields").insert(rows).execute()
++    return new_keys
++
++
++def _auto_error(message: str, retryable: bool = True) -> AutoExtractResponse:
++    return AutoExtractResponse(
++        success=False, template_id="", template_name="", template_is_new=False,
++        has_items=False, provider="gemini", model=_AUTO_MODEL,
++        error=message, retryable=retryable,
++    )
++
++
++@router.post("/auto", response_model=AutoExtractResponse)
++async def extract_auto(payload: AutoExtractRequest):
++    """Fluxo automatico: recebe foto(s)/audio/texto de uma mesma captura (sem
++    template escolhido), classifica contra os formularios existentes — ou
++    propoe um novo — e ja extrai os valores. Tudo numa chamada."""
++    if not payload.photos and not payload.audio and not (payload.text or "").strip():
++        return _auto_error("Nenhuma informação anexada para enviar.", retryable=False)
++
++    t0 = time.monotonic()
++    try:
++        photos_bytes: list[tuple[bytes, str]] = []
++        for p in payload.photos:
++            data = base64.b64decode(p.data)
++            if len(data) > MAX_AUTO_FILE_SIZE:
++                return _auto_error("Uma das fotos é grande demais (máx. 10 MB).", retryable=False)
++            photos_bytes.append((data, p.mime_type))
++
++        transcript = None
++        if payload.audio:
++            audio_bytes = base64.b64decode(payload.audio.data)
++            if len(audio_bytes) > MAX_AUTO_FILE_SIZE:
++                return _auto_error("O áudio é grande demais (máx. 10 MB).", retryable=False)
++            transcript = await groq_service.transcribe_audio(audio_bytes, payload.audio.mime_type)
++            t1 = time.monotonic()
++            print(f"[extract/auto] Groq STT: {t1 - t0:.1f}s", flush=True)
++
++        typed_text = (payload.text or "").strip() or None
++        if transcript and typed_text:
++            combined_text = f"{transcript}\n\n[Texto digitado adicional]:\n{typed_text}"
++        else:
++            combined_text = transcript or typed_text
++
++        catalog = _fetch_template_catalog()
++        result = await gemini_service.classify_and_extract(catalog, photos_bytes, combined_text)
++        t2 = time.monotonic()
++        print(f"[extract/auto] Gemini classificação+extração: {t2 - t0:.1f}s", flush=True)
++    except Exception as e:
++        logger.exception("Falha no modo automatico (classificacao/extracao)")
++        return _auto_error(str(e))
++
++    try:
++        match = result.get("match")
++        new_field_keys: list[str] = []
++
++        if match == "new" and result.get("new_template", {}).get("name"):
++            template_id, template_name, has_items = _create_template_from_proposal(result["new_template"])
++            template_is_new = True
++        else:
++            template_id = result.get("template_id") or ""
++            if not template_id:
++                raise ValueError("A IA não retornou um template_id válido nem propôs um novo formulário.")
++            new_field_keys = _add_suggested_fields(template_id, result.get("suggested_fields") or [])
++            template_row_resp = (
++                get_client().table("form_templates")
++                .select("name,has_items")
++                .eq("id", template_id)
++                .execute()
++            )
++            if not template_row_resp.data:
++                raise ValueError(f"Formulário {template_id} indicado pela IA não existe no banco.")
++            template_row = template_row_resp.data[0]
++            template_name = template_row["name"]
++            has_items = bool(template_row.get("has_items", False))
++            template_is_new = False
++
++        fields = [ExtractedField(**f) for f in (result.get("fields") or [])]
++        items = (
++            [ExtractedItem(fields=[ExtractedField(**f) for f in (it.get("fields") or [])])
++             for it in (result.get("items") or [])]
++            if has_items else []
++        )
++
++        return AutoExtractResponse(
++            success=True,
++            template_id=template_id,
++            template_name=template_name,
++            template_is_new=template_is_new,
++            has_items=has_items,
++            fields=fields,
++            items=items,
++            provider="gemini",
++            model=_AUTO_MODEL,
++            new_field_keys=new_field_keys,
++        )
++    except Exception as e:
++        logger.exception("Falha ao processar classificacao/criacao de template no modo automatico")
++        return _auto_error(f"Erro ao interpretar resposta da IA: {e}")
+\ No newline at end of file
+diff --git a/backend/app/services/gemini_service.py b/backend/app/services/gemini_service.py
+index 5079ad7..d95b180 100644
+--- a/backend/app/services/gemini_service.py
++++ b/backend/app/services/gemini_service.py
+@@ -8,9 +8,10 @@ from app.schemas.discovery import DiscoveredField, DiscoveryResult
+ 
+ _client = genai.Client(api_key=settings.gemini_api_key)
+ 
+-# gemini-2.0-flash-lite: modelo gratuito mais leve, suficiente para extração
+-# estruturada.
+-_MODEL = "gemini-2.0-flash-lite"
++# Nome do modelo vem de settings (env GEMINI_MODEL) — NÃO hardcode aqui.
++# O gemini-2.0-flash-lite foi desativado pelo Google em 01/06/2026 (ver
++# core/config.py); manter o valor fixo faria toda extração falhar com 404.
++_MODEL = settings.gemini_model
+ 
+ # ─── MODO GUIADO (com template) ─────────────────────────────────────────────
+ 
+@@ -295,3 +296,119 @@ async def discover_and_extract_multimodal(
+             error=str(e),
+             mode="discovery",
+         )
++
++
++# ─── MODO AUTOMÁTICO (classifica contra templates existentes ou propõe um novo) ─
++# Usado pelo endpoint POST /extract/auto. Numa única chamada, a IA decide se
++# a captura se encaixa em algum form_template já cadastrado (devolvendo só o
++# id + eventuais campos que faltavam nele) ou se nenhum serve e um template
++# novo deve ser proposto — e já extrai os valores encontrados.
++
++_AUTO_PROMPT = """Você é um assistente que recebe uma captura de campo (foto e/ou texto — que pode ser transcrição de áudio ou digitado) e decide como estruturá-la dentro de um sistema de formulários dinâmico.
++
++FORMULÁRIOS JÁ CADASTRADOS (catálogo, em JSON):
++{catalog_json}
++
++SEU TRABALHO, EM UMA ÚNICA RESPOSTA:
++1. Decida se o conteúdo se encaixa em algum formulário do catálogo acima (match="existing") ou se nenhum deles serve e um formulário novo precisa ser criado (match="new"). Prefira reaproveitar um formulário existente sempre que o conteúdo for do mesmo tipo, mesmo que falte algum campo.
++2. Se match="existing": preencha "template_id" com o id exato do formulário escolhido (copiado do catálogo). Se esse formulário não tiver algum campo essencial para o conteúdo (ex.: uma nota fiscal sem campo "emissor"), liste esse(s) campo(s) em "suggested_fields" no mesmo formato dos campos do catálogo — isso NÃO é motivo para propor um formulário novo. Deixe "new_template" com name="" e fields=[].
++3. Se match="new": preencha "new_template" com nome, descrição, has_items e os campos propostos. Deixe "template_id"="" e "suggested_fields"=[].
++4. Em "fields", extraia os valores encontrados no conteúdo para os campos de nível de relatório (do template escolhido + suggested_fields, ou do novo template) — apenas os que NÃO são is_item_field.
++5. Se o formulário (existente ou novo) tiver has_items=true, retorne também "items": uma lista onde cada item tem seus próprios "fields", contendo só os campos marcados is_item_field. Se has_items=false, retorne "items": [].
++
++REGRAS:
++- Nunca invente informações que não estão no conteúdo.
++- Para valores não encontrados, use string vazia "".
++- confidence reflete sua certeza: 1.0 = certeza absoluta, 0.5 = incerto.
++- "source" de cada campo extraído indica de onde veio o valor predominantemente: "image", "audio", "text", ou "" se não fizer sentido diferenciar.
++- Tipos válidos para campos: text, long_text, number, decimal, date, boolean, select.
++- Chaves (key) em snake_case, sem espaços. Rótulos (label) em português, claros para um usuário leigo.
++- Retorne APENAS o JSON pedido, sem texto adicional.
++"""
++
++_AUTO_FIELD_SPEC_SCHEMA = {
++    "type": "OBJECT",
++    "properties": {
++        "key": {"type": "STRING"},
++        "label": {"type": "STRING"},
++        "type": {"type": "STRING"},
++        "extraction_hint": {"type": "STRING"},
++        "options": {"type": "ARRAY", "items": {"type": "STRING"}},
++        "is_item_field": {"type": "BOOLEAN"},
++    },
++    "required": ["key", "label", "type"],
++}
++
++_AUTO_EXTRACTED_FIELD_SCHEMA = {
++    "type": "OBJECT",
++    "properties": {
++        "key": {"type": "STRING"},
++        "value": {"type": "STRING"},
++        "confidence": {"type": "NUMBER"},
++        "source": {"type": "STRING"},
++    },
++    "required": ["key", "value", "confidence"],
++}
++
++_AUTO_RESPONSE_SCHEMA = {
++    "type": "OBJECT",
++    "properties": {
++        "match": {"type": "STRING"},
++        "template_id": {"type": "STRING"},
++        "new_template": {
++            "type": "OBJECT",
++            "properties": {
++                "name": {"type": "STRING"},
++                "description": {"type": "STRING"},
++                "has_items": {"type": "BOOLEAN"},
++                "fields": {"type": "ARRAY", "items": _AUTO_FIELD_SPEC_SCHEMA},
++            },
++            "required": ["name", "fields"],
++        },
++        "suggested_fields": {"type": "ARRAY", "items": _AUTO_FIELD_SPEC_SCHEMA},
++        "fields": {"type": "ARRAY", "items": _AUTO_EXTRACTED_FIELD_SCHEMA},
++        "items": {
++            "type": "ARRAY",
++            "items": {
++                "type": "OBJECT",
++                "properties": {"fields": {"type": "ARRAY", "items": _AUTO_EXTRACTED_FIELD_SCHEMA}},
++                "required": ["fields"],
++            },
++        },
++    },
++    "required": ["match", "template_id", "new_template", "suggested_fields", "fields", "items"],
++}
++
++
++def _auto_config() -> types.GenerateContentConfig:
++    return types.GenerateContentConfig(
++        response_mime_type="application/json",
++        response_schema=_AUTO_RESPONSE_SCHEMA,
++    )
++
++
++async def classify_and_extract(
++    catalog: list[dict],
++    photos: list[tuple[bytes, str]],
++    text: str | None,
++) -> dict:
++    """Classifica a captura contra o catálogo de formulários (ou propõe um
++    novo) e já extrai os valores encontrados — tudo numa única chamada.
++    Retorna o dict cru (ver _AUTO_RESPONSE_SCHEMA); quem chama
++    (routes/extract.py) decide o que fazer no banco a partir dele."""
++    prompt = _AUTO_PROMPT.format(catalog_json=json.dumps(catalog, ensure_ascii=False))
++    if text:
++        prompt += f"\n\nCONTEÚDO DE ÁUDIO/TEXTO (transcrição ou texto digitado):\n{text}"
++    if photos:
++        prompt += "\n\nALÉM DISSO, analise a(s) imagem(ns) enviada(s) junto com esta mensagem."
++
++    contents: list = [prompt]
++    for media_bytes, mime_type in photos:
++        contents.append(types.Part.from_bytes(data=media_bytes, mime_type=mime_type))
++
++    response = await _client.aio.models.generate_content(
++        model=_MODEL,
++        contents=contents,
++        config=_auto_config(),
++    )
++    return json.loads(response.text)
+-- 
+2.43.0
+
