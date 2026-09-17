@@ -1,92 +1,79 @@
 # backend/app/schemas/reports.py
-# Espelha src/types/reports.ts — qualquer mudança lá precisa ser
-# refletida aqui também.
-from typing import Any
+# Espelha src/types/reports.ts — campos opcionais refletem o novo modelo
+# dinamico onde form_template_id deixa de ser obrigatorio.
+from typing import Any, Optional
 from pydantic import BaseModel
 
 
 class ReportFieldIn(BaseModel):
-    form_field_id: str
+    form_field_id: Optional[str] = None   # opcional — campos descobertos nao tem
     key: str
     label: str
-    # { type: FieldType, value: ... } — ver FieldValue em types/reports.ts.
-    # Fica como dict solto de propósito: validar o discriminated union
-    # inteiro em Pydantic duplicaria a lógica de fieldValue.ts sem
-    # necessidade, já que quem decide o formato é sempre o app.
     field_value: dict[str, Any]
-    confidence: float | None = None
+    confidence: Optional[float] = None
     source: str
+    input_source: Optional[str] = None    # 'image' | 'audio' | 'text' | 'combined' | 'manual'
     was_edited: bool = False
-    # De qual fonte o valor veio ('image'/'audio'/'text') quando a captura
-    # combinou mais de uma modalidade — None quando não se aplica.
-    input_source: str | None = None
+    # Campos dinamicos (descobertos pela IA, sem form_field_id)
+    dynamic_type: Optional[str] = None
 
 
 class CaptureIn(BaseModel):
     id: str
     type: str
-    local_path: str | None = None
-    file_url: str | None = None
-    mime_type: str | None = None
+    local_path: Optional[str] = None
+    file_url: Optional[str] = None
+    mime_type: Optional[str] = None
     created_at: str
-
-
-class ReportItemIn(BaseModel):
-    # id gerado no app (mesmo padrão de Report.id) — permite upsert idempotente
-    # igual ao resto do sync, sem depender do banco gerar o id primeiro.
-    id: str
-    fields: list[ReportFieldIn] = []
 
 
 class ReportIn(BaseModel):
     id: str
-    form_template_id: str
-    form_template_name: str
+    form_template_id: Optional[str] = None   # opcional no modo descoberta
+    form_template_name: Optional[str] = None
+    context_label: Optional[str] = None       # ex: "Nota Fiscal"
+    context_type: Optional[str] = None        # ex: "nota_fiscal"
     status: str
     fields: list[ReportFieldIn] = []
-    items: list[ReportItemIn] = []   # só preenchido quando o template tem has_items=True
     captures: list[CaptureIn] = []
     created_at: str
     updated_at: str
-    synced_at: str | None = None
+    synced_at: Optional[str] = None
 
 
 class ReportFieldOut(BaseModel):
-    form_field_id: str
+    form_field_id: Optional[str] = None
     key: str
     label: str
     field_value: dict[str, Any]
-    confidence: float | None = None
+    confidence: Optional[float] = None
     source: str
+    input_source: Optional[str] = None
     was_edited: bool = False
-    input_source: str | None = None
+    dynamic_type: Optional[str] = None
 
 
 class CaptureOut(BaseModel):
     id: str
     type: str
-    local_path: str | None = None
-    file_url: str | None = None
-    mime_type: str | None = None
+    local_path: Optional[str] = None
+    file_url: Optional[str] = None
+    mime_type: Optional[str] = None
     created_at: str
-
-
-class ReportItemOut(BaseModel):
-    id: str
-    fields: list[ReportFieldOut] = []
 
 
 class ReportOut(BaseModel):
     id: str
-    form_template_id: str
-    form_template_name: str
+    form_template_id: Optional[str] = None
+    form_template_name: Optional[str] = None
+    context_label: Optional[str] = None
+    context_type: Optional[str] = None
     status: str
     fields: list[ReportFieldOut] = []
-    items: list[ReportItemOut] = []
     captures: list[CaptureOut] = []
     created_at: str
     updated_at: str
-    synced_at: str | None = None
+    synced_at: Optional[str] = None
 
 
 class ReportSyncResult(BaseModel):

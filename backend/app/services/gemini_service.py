@@ -1,64 +1,20 @@
 # backend/app/services/gemini_service.py
-import asyncio
 import json
 from google import genai
 from google.genai import types
-from google.genai import errors as genai_errors
 from app.core.config import settings
-from app.schemas.extraction import (
-    ExtractedField,
-    ExtractedItem,
-    FieldHint,
-    ClassificationResult,
-    TemplateCatalogEntry,
-)
+from app.schemas.extraction import ExtractedField, FieldHint
+from app.schemas.discovery import DiscoveredField, DiscoveryResult
 
 _client = genai.Client(api_key=settings.gemini_api_key)
 
-# O nome do modelo vem do .env (GEMINI_MODEL) justamente porque o Google
-# aposenta modelos periodicamente — o gemini-2.0-flash-lite foi desligado em
-# 01/06/2026 e passou a responder 404. Trocar de modelo não deve exigir deploy.
-MODEL = settings.gemini_model
-PROVIDER = "gemini"
+# gemini-2.0-flash-lite: modelo gratuito mais leve, suficiente para extração
+# estruturada.
+_MODEL = "gemini-2.0-flash-lite"
 
+# ─── MODO GUIADO (com template) ─────────────────────────────────────────────
 
-class ExtractionError(Exception):
-    """Falha ao obter uma resposta utilizável do modelo.
-
-    `retryable=True` sinaliza pro chamador (extract.py, e depois o app) que
-    vale a pena tentar de novo em vez de cair direto pro preenchimento
-    manual — hoje só usado pra sobrecarga momentânea do Gemini (503)."""
-
-    def __init__(self, message: str, *, retryable: bool = False):
-        super().__init__(message)
-        self.retryable = retryable
-
-
-# Sobrecarga momentânea (503 UNAVAILABLE) costuma passar em segundos — o SDK
-# já tenta de novo sozinho, mas desiste rápido demais pra picos curtos de
-# demanda. Duas tentativas extras com um respiro maior a cada uma.
-_TRANSIENT_RETRY_DELAYS = (2, 5)
-
-
-async def _generate_with_retry(**kwargs):
-    last_err: genai_errors.ServerError | None = None
-    for delay in (0, *_TRANSIENT_RETRY_DELAYS):
-        if delay:
-            await asyncio.sleep(delay)
-        try:
-            return await _client.aio.models.generate_content(**kwargs)
-        except genai_errors.ServerError as err:
-            last_err = err
-            continue
-    raise ExtractionError(
-        "O serviço de IA está sobrecarregado no momento. Tente novamente em alguns instantes.",
-        retryable=True,
-    ) from last_err
-
-
-# ─── extração clássica (template já escolhido, sem itens) ─────────────────
-
-PROMPT_TEMPLATE = """Você é um assistente que extrai informações estruturadas de relatos de trabalhadores de campo. O conteúdo pode combinar mais de uma fonte na mesma captura — uma ou mais fotos, e/ou um texto (transcrito de fala ou digitado) — use todas as fontes fornecidas em conjunto para preencher os campos.
+PROMPT_TEMPLATE = """Você é um assistente que extrai informações estruturadas de relatos de trabalhadores de campo (voz ou foto).
 
 CAMPOS PARA EXTRAIR:
 {fields_spec}
@@ -67,18 +23,12 @@ REGRAS:
 - Extraia apenas informações presentes no conteúdo.
 - Nunca invente informações.
 - Para campos não encontrados, retorne string vazia "".
-- Nunca preencha um campo com um valor que pertence a outro conceito só para
-  não deixá-lo vazio (ex: um campo "Órgão Emissor" não é o mesmo que o
-  município de tributação de uma nota fiscal) — nesse caso, retorne "".
 - Retorne APENAS o JSON pedido, sem texto adicional.
 - Para campos de data, use o formato YYYY-MM-DD.
 - Para campos de seleção, retorne exatamente uma das opções fornecidas.
-- Para cada campo preenchido, informe em "source" de qual fonte o valor veio
-  predominantemente: "image" (de uma foto), "audio" (de fala transcrita) ou
-  "text" (de texto digitado). Se o campo ficou vazio, use "" mesmo assim.
 
 Retorne um JSON com esta estrutura exata:
-{{"fields": [{{"key": "chave_do_campo", "value": "valor_extraído", "confidence": 0.95, "source": "image"}}]}}
+{{"fields": [{{"key": "chave_do_campo", "value": "valor_extraído", "confidence": 0.95}}]}}
 """
 
 
@@ -90,39 +40,7 @@ def _build_fields_spec(fields: list[FieldHint]) -> str:
     return "\n".join(lines)
 
 
-# label interno -> como aparece no prompt, pra deixar claro pro modelo qual
-# texto veio de onde (isso é o que permite ele responder "source": "audio"
-# vs "text" com alguma confiança).
-_TEXT_SOURCE_LABELS = {
-    "audio": "TEXTO TRANSCRITO DE ÁUDIO (fala do usuário)",
-    "text": "TEXTO DIGITADO PELO USUÁRIO",
-}
-
-
-def _build_text_block(texts: list[tuple[str, str]]) -> str:
-    blocks = []
-    for source, content in texts:
-        if not content or not content.strip():
-            continue
-        label = _TEXT_SOURCE_LABELS.get(source, source.upper())
-        blocks.append(f"\n\n{label}:\n{content.strip()}")
-    return "".join(blocks)
-
-
-def _build_contents(prompt: str, texts: list[tuple[str, str]], images: list[tuple[bytes, str]]):
-    """Monta `contents` pro Gemini a partir de uma combinação de textos
-    (áudio transcrito e/ou texto digitado) e imagens (uma ou mais fotos).
-    Sempre inclui pelo menos o prompt — texts/images podem vir vazios."""
-    full_prompt = prompt + _build_text_block(texts)
-    if not images:
-        return full_prompt
-    parts: list = [full_prompt]
-    for data, mime in images:
-        parts.append(types.Part.from_bytes(data=data, mime_type=mime))
-    return parts
-
-
-_FIELDS_SCHEMA = {
+_GUIDED_RESPONSE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
         "fields": {
@@ -133,9 +51,8 @@ _FIELDS_SCHEMA = {
                     "key": {"type": "STRING"},
                     "value": {"type": "STRING"},
                     "confidence": {"type": "NUMBER"},
-                    "source": {"type": "STRING", "enum": ["image", "audio", "text"]},
                 },
-                "required": ["key", "value", "confidence", "source"],
+                "required": ["key", "value", "confidence"],
             }
         }
     },
@@ -143,283 +60,238 @@ _FIELDS_SCHEMA = {
 }
 
 
-def _parse_fields_response(response) -> list[ExtractedField]:
-    raw = getattr(response, "text", None)
-    if not raw:
-        raise ExtractionError(
-            "O modelo não retornou conteúdo. Verifique se a imagem/áudio é legível."
-        )
-    try:
-        data = json.loads(raw)
-        return [ExtractedField(**f) for f in data["fields"]]
-    except (json.JSONDecodeError, KeyError, TypeError) as err:
-        raise ExtractionError(f"Resposta do modelo em formato inesperado: {err}") from err
-
-
-async def _extract_flat(
-    fields: list[FieldHint],
-    *,
-    texts: list[tuple[str, str]],
-    images: list[tuple[bytes, str]],
-) -> list[ExtractedField]:
-    prompt = PROMPT_TEMPLATE.format(fields_spec=_build_fields_spec(fields))
-    contents = _build_contents(prompt, texts, images)
-    response = await _generate_with_retry(
-        model=MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=_FIELDS_SCHEMA
-        ),
+def _guided_config() -> types.GenerateContentConfig:
+    return types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=_GUIDED_RESPONSE_SCHEMA,
     )
-    return _parse_fields_response(response)
+
+
+def _parse_guided_response(response) -> list[ExtractedField]:
+    data = json.loads(response.text)
+    return [ExtractedField(**f) for f in data["fields"]]
 
 
 async def extract_from_media(
-    fields: list[FieldHint], media_bytes: bytes, mime_type: str,
+    fields: list[FieldHint],
+    media_bytes: bytes,
+    mime_type: str,
 ) -> list[ExtractedField]:
-    """Compat: extração clássica com uma única mídia (endpoint /extract/)."""
-    return await _extract_flat(fields, texts=[], images=[(media_bytes, mime_type)])
+    """Extrai campos a partir de uma imagem usando Gemini multimodal.
+    Usa _client.aio para não bloquear o event loop do FastAPI."""
+    fields_spec = _build_fields_spec(fields)
+    prompt = PROMPT_TEMPLATE.format(fields_spec=fields_spec)
 
-
-async def extract_from_text(fields: list[FieldHint], text: str) -> list[ExtractedField]:
-    """Compat: extração clássica só com texto (endpoint /extract/)."""
-    return await _extract_flat(fields, texts=[("text", text)], images=[])
-
-
-# ─── classificação: usar template existente ou propor um novo ─────────────
-
-CLASSIFY_PROMPT_TEMPLATE = """Você analisa relatos de trabalhadores de campo (uma ou mais fotos, e/ou texto transcrito de voz ou digitado — possivelmente combinados na mesma captura) e decide qual TIPO de formulário se aplica.
-
-TEMPLATES DISPONÍVEIS:
-{templates_spec}
-
-Se um dos templates acima descrever bem o conteúdo, responda "existing" com o id dele.
-
-Quando responder "existing", avalie também se os campos ATUAIS desse template
-capturam tudo que é essencial no conteúdo. Templates são um ponto de partida,
-não uma lista fechada — se faltar algo essencial (ex: um template "Documento"
-com só numero_documento/data, mas o conteúdo é uma nota fiscal que também
-mostra claramente o prestador, o tomador, a chave de acesso e o valor total),
-liste os campos faltantes em suggested_fields, no mesmo formato dos campos de
-new_template. Eles serão adicionados ao template permanentemente, então:
-- só inclua campos que sejam claramente essenciais e estejam de fato
-  ausentes (nunca repita uma key que o template já tem);
-- prefira campos numéricos/decimais para valores monetários que estejam
-  claramente discriminados (ex: valor total, valor de um imposto) em vez de
-  deixá-los soltos apenas dentro de um campo de observações;
-- no máximo 8 campos por vez — mesmo limite de new_template.fields;
-- se o template já cobre bem o conteúdo, deixe suggested_fields vazio.
-
-Se NENHUM template existente descrever bem o conteúdo, responda "new" e proponha um template:
-- name: nome curto do tipo de formulário (ex: "Registro de Manutenção")
-- description: uma frase explicando o tipo de coleta
-- has_items: true se o relato descreve MÚLTIPLOS itens/objetos do mesmo tipo repetidos (ex: uma foto com vários produtos numa prateleira/despensa, uma lista de itens contados um a um) — false se é um único registro (ex: um documento, uma inspeção de um único local)
-- fields: até 8 campos a extrair. Para cada campo:
-  - key: snake_case, sem acentos
-  - label: rótulo para exibir ao usuário
-  - type: um de text, long_text, number, decimal, date, boolean, select, multiselect
-  - extraction_hint: instrução curta para outra IA extrair esse valor do conteúdo
-  - options: lista de opções, apenas se type for select ou multiselect
-  - is_item_field: true se esse campo se repete por item (só faz sentido quando has_items=true, ex: "produto", "quantidade"); false se é um campo único do relatório inteiro (ex: "local", "data", "responsavel")
-
-REGRAS:
-- Prefira sempre um template existente se ele cobrir razoavelmente o conteúdo, mesmo que não seja perfeito — evite propor um template novo para algo que já existe com outro nome.
-- has_items é uma restrição rígida do template, não uma sugestão: um template com has_items=false só pode representar UM registro. Se o conteúdo mostrar vários itens do mesmo tipo repetidos (ex: vários produtos numa prateleira/despensa) e o template mais parecido tiver has_items=false, NÃO escolha esse template — proponha um novo com has_items=true, mesmo que o nome/propósito seja parecido com um já existente.
-- Só proponha um template novo se realmente não há nenhum adequado (considerando também a restrição de has_items acima).
-- Retorne APENAS o JSON pedido, sem texto adicional.
-"""
-
-
-def _build_templates_spec(catalog: list[TemplateCatalogEntry]) -> str:
-    if not catalog:
-        return "(nenhum template cadastrado ainda — proponha um novo)"
-    lines = []
-    for t in catalog:
-        fields_desc = ", ".join(f"{f.key} ({f.type})" for f in t.fields) or "(sem campos)"
-        lines.append(
-            f'- id="{t.id}" | "{t.name}": {t.description or "sem descrição"} '
-            f"| has_items={t.has_items} | campos: {fields_desc}"
-        )
-    return "\n".join(lines)
-
-
-# Compartilhado entre new_template.fields e suggested_fields — os dois
-# descrevem "um campo que a IA está propondo criar", só muda o contexto
-# (template todo novo vs. lacuna num template existente).
-_PROPOSED_FIELD_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "key": {"type": "STRING"},
-        "label": {"type": "STRING"},
-        "type": {
-            "type": "STRING",
-            "enum": [
-                "text", "long_text", "number", "decimal",
-                "date", "boolean", "select", "multiselect",
-            ],
-        },
-        "extraction_hint": {"type": "STRING"},
-        "options": {"type": "ARRAY", "items": {"type": "STRING"}},
-        "is_item_field": {"type": "BOOLEAN"},
-    },
-    "required": ["key", "label", "type", "is_item_field"],
-}
-
-_CLASSIFY_SCHEMA = {
-    "type": "OBJECT",
-    "properties": {
-        "match": {"type": "STRING", "enum": ["existing", "new"]},
-        "template_id": {"type": "STRING"},
-        "new_template": {
-            "type": "OBJECT",
-            "properties": {
-                "name": {"type": "STRING"},
-                "description": {"type": "STRING"},
-                "has_items": {"type": "BOOLEAN"},
-                "fields": {"type": "ARRAY", "items": _PROPOSED_FIELD_SCHEMA},
-            },
-            "required": ["name", "has_items", "fields"],
-        },
-        # Só preenchido quando match='existing' — ver comentário no prompt.
-        "suggested_fields": {"type": "ARRAY", "items": _PROPOSED_FIELD_SCHEMA},
-    },
-    "required": ["match"],
-}
-
-
-async def classify_or_propose(
-    catalog: list[TemplateCatalogEntry],
-    *,
-    texts: list[tuple[str, str]] | None = None,
-    images: list[tuple[bytes, str]] | None = None,
-) -> ClassificationResult:
-    """Decide qual template usar, ou propõe um novo quando nada se encaixa.
-    `texts` é uma lista de (fonte, conteúdo) — fonte é "audio" (voz já
-    transcrita) ou "text" (digitado); `images` é uma lista de (bytes, mime)
-    — uma ou mais fotos. Podem vir combinados (ex: 2 fotos + 1 áudio)."""
-    texts = texts or []
-    images = images or []
-    if not texts and not images:
-        raise ValueError("Forneça texts e/ou images.")
-
-    prompt = CLASSIFY_PROMPT_TEMPLATE.format(templates_spec=_build_templates_spec(catalog))
-    contents = _build_contents(prompt, texts, images)
-
-    response = await _generate_with_retry(
-        model=MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=_CLASSIFY_SCHEMA
-        ),
+    response = await _client.aio.models.generate_content(
+        model=_MODEL,
+        contents=[
+            prompt,
+            types.Part.from_bytes(data=media_bytes, mime_type=mime_type),
+        ],
+        config=_guided_config(),
     )
-    raw = getattr(response, "text", None)
-    if not raw:
-        raise ExtractionError("O modelo não retornou uma classificação.")
-    try:
-        return ClassificationResult(**json.loads(raw))
-    except (json.JSONDecodeError, TypeError) as err:
-        raise ExtractionError(f"Resposta de classificação em formato inesperado: {err}") from err
+
+    return _parse_guided_response(response)
 
 
-# ─── extração para um template que pode ter itens repetidos ───────────────
+async def extract_from_text(
+    fields: list[FieldHint],
+    text: str,
+) -> list[ExtractedField]:
+    """Usado no fluxo de voz: recebe a transcrição (Groq/Whisper) como texto
+    puro e pede ao Gemini para extrair os campos estruturados a partir dela."""
+    fields_spec = _build_fields_spec(fields)
+    prompt = (
+        PROMPT_TEMPLATE.format(fields_spec=fields_spec)
+        + f"\n\nTEXTO TRANSCRITO (fala do usuário):\n{text}"
+    )
 
-ITEMS_PROMPT_TEMPLATE = """Você extrai informações estruturadas de relatos de trabalhadores de campo (uma ou mais fotos e/ou texto transcrito de voz ou digitado, possivelmente combinados), incluindo casos com MÚLTIPLOS itens do mesmo tipo (ex: vários produtos numa foto de prateleira/despensa, possíveis várias fotos do mesmo estoque de ângulos diferentes — não conte o mesmo item duas vezes se aparecer em mais de uma foto).
+    response = await _client.aio.models.generate_content(
+        model=_MODEL,
+        contents=prompt,
+        config=_guided_config(),
+    )
 
-CAMPOS DE NÍVEL DE RELATÓRIO (extraia uma vez só, se presentes):
-{flat_spec}
+    return _parse_guided_response(response)
 
-CAMPOS POR ITEM (identifique CADA item distinto no conteúdo e extraia estes campos para cada um):
-{item_spec}
+
+# ─── MODO DESCOBERTA (sem template) ─────────────────────────────────────────
+
+_DISCOVERY_PROMPT = """Você é um assistente especializado em analisar qualquer tipo de informação e estruturá-la de forma organizada.
+
+Analise o conteúdo recebido e responda:
+
+1. O que é este conteúdo? (descreva em linguagem natural simples, ex: "Nota fiscal de serviços", "Relatório de inspeção de equipamento", "Relato de ocorrência")
+2. Um identificador curto em snake_case para esse tipo (ex: nota_fiscal, inspecao_equipamento, ocorrencia)
+3. Quais informações relevantes existem? Proponha campos estruturados.
 
 REGRAS:
-- Identifique quantos itens distintos existem no conteúdo (ex: conte cada produto visível nas fotos, sem repetir o mesmo item visto em mais de uma foto).
-- Extraia os campos por item para CADA item encontrado — não agrupe itens diferentes numa linha só.
-- Para campos não encontrados, retorne string vazia "".
-- Nunca preencha um campo com um valor que pertence a outro conceito só para
-  não deixá-lo vazio — nesse caso, retorne "".
-- Para cada campo preenchido (de relatório ou de item), informe em "source"
-  de qual fonte o valor veio predominantemente: "image", "audio" ou "text".
+- Extraia apenas informações que realmente aparecem no conteúdo.
+- Nunca invente informações.
+- Para valores não encontrados, use string vazia "".
+- Para campos de data, use formato YYYY-MM-DD.
+- Tipos válidos: text, long_text, number, decimal, date, boolean
+- Escolha chaves (key) em snake_case, descritivas e sem espaços.
+- Escolha rótulos (label) em português, claros para um usuário leigo.
+- A confiança (confidence) deve refletir sua certeza: 1.0 = certeza absoluta, 0.5 = incerto.
 - Retorne APENAS o JSON pedido, sem texto adicional.
 
-Retorne um JSON com esta estrutura exata:
+JSON esperado:
 {{
-  "fields": [{{"key": "chave", "value": "valor", "confidence": 0.9, "source": "image"}}],
-  "items": [
-    {{"fields": [{{"key": "chave_do_item", "value": "valor", "confidence": 0.9, "source": "image"}}]}}
+  "context": "descrição em linguagem natural clara",
+  "context_type": "slug_identificador",
+  "fields": [
+    {{"key": "chave", "label": "Rótulo legível", "type": "text", "value": "valor extraído", "confidence": 0.9}}
   ]
 }}
 """
 
-
-_ITEMS_SCHEMA = {
+_DISCOVERY_RESPONSE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
-        "fields": _FIELDS_SCHEMA["properties"]["fields"],
-        "items": {
+        "context": {"type": "STRING"},
+        "context_type": {"type": "STRING"},
+        "fields": {
             "type": "ARRAY",
             "items": {
                 "type": "OBJECT",
-                "properties": {"fields": _FIELDS_SCHEMA["properties"]["fields"]},
-                "required": ["fields"],
-            },
-        },
+                "properties": {
+                    "key": {"type": "STRING"},
+                    "label": {"type": "STRING"},
+                    "type": {"type": "STRING"},
+                    "value": {"type": "STRING"},
+                    "confidence": {"type": "NUMBER"},
+                },
+                "required": ["key", "label", "type", "value", "confidence"],
+            }
+        }
     },
-    "required": ["fields", "items"],
+    "required": ["context", "context_type", "fields"],
 }
 
 
-def _parse_items_response(response) -> tuple[list[ExtractedField], list[ExtractedItem]]:
-    raw = getattr(response, "text", None)
-    if not raw:
-        raise ExtractionError(
-            "O modelo não retornou conteúdo. Verifique se a imagem/áudio é legível."
-        )
+def _discovery_config() -> types.GenerateContentConfig:
+    return types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=_DISCOVERY_RESPONSE_SCHEMA,
+    )
+
+
+def _parse_discovery_response(response) -> tuple[str, str, list[DiscoveredField]]:
+    data = json.loads(response.text)
+    context = data.get("context", "")
+    context_type = data.get("context_type", "informacao")
+    fields = [DiscoveredField(**f) for f in data.get("fields", [])]
+    return context, context_type, fields
+
+
+async def discover_and_extract_from_media(
+    media_bytes: bytes,
+    mime_type: str,
+) -> DiscoveryResult:
+    """Modo descoberta: analisa imagem livremente, sem template.
+    A IA identifica o contexto e propõe os campos por conta própria."""
     try:
-        data = json.loads(raw)
-        flat = [ExtractedField(**f) for f in data["fields"]]
-        items = [
-            ExtractedItem(fields=[ExtractedField(**f) for f in it["fields"]])
-            for it in data["items"]
-        ]
-        return flat, items
-    except (json.JSONDecodeError, KeyError, TypeError) as err:
-        raise ExtractionError(f"Resposta do modelo em formato inesperado: {err}") from err
+        response = await _client.aio.models.generate_content(
+            model=_MODEL,
+            contents=[
+                _DISCOVERY_PROMPT,
+                types.Part.from_bytes(data=media_bytes, mime_type=mime_type),
+            ],
+            config=_discovery_config(),
+        )
+        context, context_type, fields = _parse_discovery_response(response)
+        return DiscoveryResult(
+            success=True,
+            context=context,
+            context_type=context_type,
+            fields=fields,
+            provider="gemini",
+            model=_MODEL,
+            mode="discovery",
+        )
+    except Exception as e:
+        return DiscoveryResult(
+            success=False,
+            fields=[],
+            provider="gemini",
+            model=_MODEL,
+            error=str(e),
+            mode="discovery",
+        )
 
 
-async def extract_for_template(
-    fields: list[FieldHint],
-    has_items: bool,
-    *,
-    texts: list[tuple[str, str]] | None = None,
-    images: list[tuple[bytes, str]] | None = None,
-) -> tuple[list[ExtractedField], list[ExtractedItem]]:
-    """Extrai os valores para um template já resolvido (existente ou recém-criado).
-    `texts`/`images` seguem o mesmo formato de `classify_or_propose` — podem
-    combinar várias fotos e/ou áudio e/ou texto na mesma captura.
-    Retorna (campos_de_nivel_de_relatorio, itens) — `itens` fica vazio quando
-    has_items=False."""
-    texts = texts or []
-    images = images or []
-    if not texts and not images:
-        raise ValueError("Forneça texts e/ou images.")
+async def discover_and_extract_from_text(
+    text: str,
+) -> DiscoveryResult:
+    """Modo descoberta: analisa texto transcrito (voz) livremente, sem template.
+    Também recebe texto digitado diretamente pelo usuário."""
+    try:
+        prompt = _DISCOVERY_PROMPT + f"\n\nCONTEÚDO A ANALISAR:\n{text}"
+        response = await _client.aio.models.generate_content(
+            model=_MODEL,
+            contents=prompt,
+            config=_discovery_config(),
+        )
+        context, context_type, fields = _parse_discovery_response(response)
+        return DiscoveryResult(
+            success=True,
+            context=context,
+            context_type=context_type,
+            fields=fields,
+            provider="gemini",
+            model=_MODEL,
+            mode="discovery",
+        )
+    except Exception as e:
+        return DiscoveryResult(
+            success=False,
+            fields=[],
+            provider="gemini",
+            model=_MODEL,
+            error=str(e),
+            mode="discovery",
+        )
 
-    if not has_items:
-        flat = await _extract_flat(fields, texts=texts, images=images)
-        return flat, []
 
-    flat_fields = [f for f in fields if not f.is_item_field]
-    item_fields = [f for f in fields if f.is_item_field]
-    prompt = ITEMS_PROMPT_TEMPLATE.format(
-        flat_spec=_build_fields_spec(flat_fields) or "(nenhum)",
-        item_spec=_build_fields_spec(item_fields) or "(nenhum)",
-    )
-    contents = _build_contents(prompt, texts, images)
-
-    response = await _generate_with_retry(
-        model=MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json", response_schema=_ITEMS_SCHEMA
-        ),
-    )
-    return _parse_items_response(response)
+async def discover_and_extract_multimodal(
+    media_bytes: bytes,
+    mime_type: str,
+    transcript: str,
+) -> DiscoveryResult:
+    """Modo descoberta multimodal: combina imagem + texto transcrito (ou digitado).
+    Usa as duas fontes juntas para produzir uma única estrutura de informação."""
+    try:
+        combined_prompt = (
+            _DISCOVERY_PROMPT
+            + f"\n\nCONTEÚDO DE ÁUDIO/TEXTO (transcrição ou texto digitado):\n{transcript}"
+            + "\n\nALÉM DISSO, analise também a imagem enviada junto com esta mensagem."
+            + "\nUse ambas as fontes para produzir os campos mais completos possíveis."
+        )
+        response = await _client.aio.models.generate_content(
+            model=_MODEL,
+            contents=[
+                combined_prompt,
+                types.Part.from_bytes(data=media_bytes, mime_type=mime_type),
+            ],
+            config=_discovery_config(),
+        )
+        context, context_type, fields = _parse_discovery_response(response)
+        return DiscoveryResult(
+            success=True,
+            context=context,
+            context_type=context_type,
+            fields=fields,
+            provider="gemini",
+            model=_MODEL,
+            mode="discovery",
+        )
+    except Exception as e:
+        return DiscoveryResult(
+            success=False,
+            fields=[],
+            provider="gemini",
+            model=_MODEL,
+            error=str(e),
+            mode="discovery",
+        )

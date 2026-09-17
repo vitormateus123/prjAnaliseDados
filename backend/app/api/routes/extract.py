@@ -1,403 +1,157 @@
 # backend/app/api/routes/extract.py
-import base64
 import json
 import logging
 import time
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from app.schemas.extraction import (
-    ExtractResponse, FieldHint, AutoExtractResponse,
-    TemplateCatalogEntry, TemplateCatalogField, ProposedField,
-    MediaItem, AutoExtractRequest,
-)
-from app.schemas.forms import FormFieldOut, FormTemplateOut
+from typing import Optional
+from app.schemas.extraction import ExtractResponse, FieldHint
+from app.schemas.discovery import DiscoveryResult, DiscoveredField
 from app.services import gemini_service, groq_service
-from app.services.gemini_service import ExtractionError
-from app.services.supabase_service import get_client
 
 logger = logging.getLogger("extract")
 router = APIRouter()
 
-MAX_SIZE = 10 * 1024 * 1024
 ALLOWED_MIME = {"image/jpeg", "image/png", "audio/m4a", "audio/mpeg", "audio/wav"}
+MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
 
-async def _read_and_validate(file: UploadFile) -> bytes:
-    content = await file.read()
+def _validate_file(content: bytes, content_type: str | None) -> None:
     if len(content) > MAX_SIZE:
-        raise HTTPException(status_code=413, detail="Arquivo muito grande (máx 10 MB).")
-    if file.content_type not in ALLOWED_MIME:
+        raise HTTPException(status_code=413, detail="Arquivo muito grande (max 10 MB).")
+    if content_type not in ALLOWED_MIME:
         raise HTTPException(
-            status_code=415, detail=f"Tipo de arquivo não suportado: {file.content_type}"
+            status_code=415,
+            detail=f"Tipo de arquivo nao suportado: {content_type}",
         )
-    return content
 
 
-def _decode_media_item(item: MediaItem, *, label: str) -> bytes:
-    """Mesmas validações de _read_and_validate, mas para um MediaItem vindo
-    em base64 dentro do JSON de /extract/auto (ver comentário no schema)."""
-    try:
-        content = base64.b64decode(item.data, validate=True)
-    except Exception:
-        raise HTTPException(status_code=422, detail=f"{label}: dado em base64 inválido.")
-    if not content:
-        raise HTTPException(status_code=422, detail=f"{label}: arquivo vazio.")
-    if len(content) > MAX_SIZE:
-        raise HTTPException(status_code=413, detail=f"{label}: arquivo muito grande (máx 10 MB).")
-    if item.mime_type not in ALLOWED_MIME:
-        raise HTTPException(
-            status_code=415, detail=f"{label}: tipo de arquivo não suportado: {item.mime_type}"
-        )
-    return content
+# ENDPOINT PRINCIPAL
 
-
-@router.post("/", response_model=ExtractResponse)
+@router.post("/")
 async def extract_fields(
-    fields_json: str = Form(...),       # JSON string com lista de FieldHint
-    media_type: str = Form(...),        # 'voice' ou 'photo'
+    media_type: str = Form(...),               # 'voice' | 'photo' | 'text'
     file: UploadFile = File(...),
+    fields_json: Optional[str] = Form(None),  # None = modo descoberta
+    extra_text: Optional[str] = Form(None),   # texto adicional para modo combinado
 ):
-    """Extração 'clássica': o app já escolheu o form_template_id e manda os
-    campos dele. Mantido para compatibilidade — o fluxo novo é /extract/auto."""
-    content = await _read_and_validate(file)
+    """Extrai/descobre campos a partir de captura multimodal.
 
-    try:
-        fields = [FieldHint(**f) for f in json.loads(fields_json)]
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"fields_json inválido: {e}")
+    Modos de operacao:
+    - Guiado   (fields_json presente): IA preenche campos de um template existente.
+    - Descoberta (fields_json ausente): IA analisa livremente e propoe contexto + campos.
+    - Combinado (media_type='photo' + extra_text): foto + texto/transcricao juntos.
+    """
+    content = await file.read()
+    _validate_file(content, file.content_type)
+    t0 = time.monotonic()
 
+    # MODO GUIADO (template presente)
+    if fields_json is not None:
+        try:
+            fields = [FieldHint(**f) for f in json.loads(fields_json)]
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"fields_json invalido: {e}")
+
+        try:
+            if media_type == "voice":
+                transcript = await groq_service.transcribe_audio(content, file.content_type)
+                t1 = time.monotonic()
+                print(f"[extract/guided] Groq STT: {t1 - t0:.1f}s", flush=True)
+                extracted = await gemini_service.extract_from_text(fields, transcript)
+                t2 = time.monotonic()
+                print(f"[extract/guided] Gemini extracao: {t2 - t1:.1f}s", flush=True)
+                model = "whisper-large-v3 + gemini-2.0-flash-lite"
+            else:
+                extracted = await gemini_service.extract_from_media(fields, content, file.content_type)
+                t1 = time.monotonic()
+                print(f"[extract/guided] Gemini multimodal: {t1 - t0:.1f}s", flush=True)
+                model = "gemini-2.0-flash-lite"
+        except Exception as e:
+            logger.exception("Falha na extracao guiada (%s)", media_type)
+            return ExtractResponse(
+                success=False, fields=[], provider="gemini",
+                model="gemini-2.0-flash-lite", error=str(e),
+            )
+        return ExtractResponse(success=True, fields=extracted, provider="gemini", model=model)
+
+    # MODO DESCOBERTA (sem template)
     try:
-        t0 = time.monotonic()
         if media_type == "voice":
             transcript = await groq_service.transcribe_audio(content, file.content_type)
             t1 = time.monotonic()
-            print(f"[extract] Groq (transcrição) levou {t1 - t0:.1f}s", flush=True)
-            extracted_fields = await gemini_service.extract_from_text(fields, transcript)
+            print(f"[extract/discovery] Groq STT: {t1 - t0:.1f}s", flush=True)
+            combined_text = transcript
+            if extra_text:
+                combined_text = f"{transcript}\n\n[Informacao adicional]:\n{extra_text}"
+            result = await gemini_service.discover_and_extract_from_text(combined_text)
             t2 = time.monotonic()
-            print(f"[extract] Gemini (extração) levou {t2 - t1:.1f}s", flush=True)
-            model = f"whisper-large-v3 + {gemini_service.MODEL}"
-        else:
-            extracted_fields = await gemini_service.extract_from_media(
-                fields, content, file.content_type
+            print(f"[extract/discovery] Gemini descoberta: {t2 - t1:.1f}s", flush=True)
+        elif media_type == "photo" and extra_text:
+            result = await gemini_service.discover_and_extract_multimodal(
+                content, file.content_type, extra_text
             )
             t1 = time.monotonic()
-            print(f"[extract] Gemini (extração multimodal) levou {t1 - t0:.1f}s", flush=True)
-            model = gemini_service.MODEL
-    except ExtractionError as e:
-        print(f"[extract] FALHOU ({'retryable' if e.retryable else 'não-retryable'}): {e}", flush=True)
-        logger.warning("Extração falhou (%s): %s", media_type, e)
-        return ExtractResponse(
-            success=False, fields=[], provider="gemini",
-            model=gemini_service.MODEL, error=str(e), retryable=e.retryable,
-        )
-    except Exception as e:
-        print(f"[extract] FALHOU: {type(e).__name__}: {e}", flush=True)
-        logger.exception("Falha na extração (%s)", media_type)
-        return ExtractResponse(
-            success=False, fields=[], provider="gemini", model=gemini_service.MODEL,
-            error="Falha inesperada ao processar a captura. Tente novamente.",
-        )
-
-    return ExtractResponse(
-        success=True, fields=extracted_fields, provider="gemini", model=model,
-    )
-
-
-# ─── /extract/auto — classifica/propõe template e extrai, sem o app precisar
-#     escolher o formulário antes ────────────────────────────────────────
-
-def _load_catalog() -> list[TemplateCatalogEntry]:
-    """Templates ativos, aprovados OU pendentes de revisão — pendentes entram
-    porque senão o mesmo tipo "novo" nunca seria reconhecido de novo na
-    segunda vez que aparecer, e a IA ficaria criando um template diferente
-    a cada captura parecida."""
-    supabase = get_client()
-    templates_resp = (
-        supabase.table("form_templates").select("*").eq("active", True).execute()
-    )
-    templates = templates_resp.data or []
-    catalog = []
-    for t in templates:
-        fields_resp = (
-            supabase.table("form_fields")
-            .select("*")
-            .eq("form_template_id", t["id"])
-            .order("position")
-            .execute()
-        )
-        catalog.append(
-            TemplateCatalogEntry(
-                id=t["id"],
-                name=t["name"],
-                description=t.get("description"),
-                has_items=t.get("has_items", False),
-                fields=[
-                    TemplateCatalogField(
-                        key=f["key"], label=f["label"], type=f["type"],
-                        extraction_hint=f.get("extraction_hint"),
-                        options=f.get("options"),
-                        is_item_field=f.get("is_item_field", False),
-                    )
-                    for f in (fields_resp.data or [])
-                ],
-            )
-        )
-    return catalog
-
-
-def _create_dynamic_template(proposed) -> FormTemplateOut:
-    """Grava o template proposto pela IA no Supabase (source='ai_generated',
-    review_status='pending') e devolve já com os IDs reais — o app precisa
-    desses IDs pra montar report_fields depois."""
-    supabase = get_client()
-
-    template_resp = (
-        supabase.table("form_templates")
-        .insert({
-            "name": proposed.name,
-            "description": proposed.description,
-            "version": 1,
-            "active": True,
-            "has_items": proposed.has_items,
-            "source": "ai_generated",
-            "review_status": "pending",
-        })
-        .execute()
-    )
-    if not template_resp.data:
-        raise HTTPException(status_code=500, detail="Falha ao criar o template proposto pela IA.")
-    template_row = template_resp.data[0]
-
-    field_rows = [
-        {
-            "form_template_id": template_row["id"],
-            "key": f.key,
-            "label": f.label,
-            "type": f.type,
-            "required": False,
-            "position": i,
-            "extraction_hint": f.extraction_hint,
-            "options": f.options,
-            "is_item_field": f.is_item_field,
-            "source": "ai_generated",
-        }
-        for i, f in enumerate(proposed.fields)
-    ]
-    fields_out: list[FormFieldOut] = []
-    if field_rows:
-        fields_resp = supabase.table("form_fields").insert(field_rows).execute()
-        for f in fields_resp.data or []:
-            fields_out.append(
-                FormFieldOut(
-                    id=f["id"], key=f["key"], label=f["label"], type=f["type"],
-                    required=f["required"], position=f["position"],
-                    extraction_hint=f.get("extraction_hint"), options=f.get("options"),
-                    is_item_field=f.get("is_item_field", False),
-                    source=f.get("source", "ai_generated"),
-                )
-            )
-
-    return FormTemplateOut(
-        id=template_row["id"], name=template_row["name"],
-        description=template_row.get("description"), version=template_row["version"],
-        active=template_row["active"], has_items=template_row.get("has_items", False),
-        fields=fields_out,
-    )
-
-
-def _persist_suggested_fields(
-    template_id: str,
-    existing_fields: list[TemplateCatalogField],
-    suggested_fields: list[ProposedField],
-) -> list[str]:
-    """Grava em form_fields os campos que a IA apontou como faltantes num
-    template EXISTENTE (ver ClassificationResult.suggested_fields), com
-    source='ai_generated' pra aparecer sinalizado em Gerenciar Formulários —
-    onde já dá pra remover (DELETE /templates/{id}/fields/{field_id}) se não
-    fizer sentido. Devolve as keys realmente inseridas (vazio se nada novo)."""
-    existing_keys = {f.key for f in existing_fields}
-    new_specs = [f for f in suggested_fields if f.key not in existing_keys]
-    if not new_specs:
-        return []
-
-    supabase = get_client()
-    start_position = len(existing_fields)
-    field_rows = [
-        {
-            "form_template_id": template_id,
-            "key": f.key,
-            "label": f.label,
-            "type": f.type,
-            "required": False,
-            "position": start_position + i,
-            "extraction_hint": f.extraction_hint,
-            "options": f.options,
-            "is_item_field": f.is_item_field,
-            "source": "ai_generated",
-        }
-        for i, f in enumerate(new_specs)
-    ]
-    fields_resp = supabase.table("form_fields").insert(field_rows).execute()
-    if not fields_resp.data:
-        # Mais provável: colisão de key com algo inserido entre o carregamento
-        # do catálogo e agora. Não vale falhar a extração inteira por isso —
-        # só loga e segue sem os campos novos.
-        logger.warning(
-            "Falha ao gravar campos sugeridos pela IA no template %s", template_id
-        )
-        return []
-    return [f["key"] for f in fields_resp.data]
-
-
-def _catalog_entry_to_template_out(entry: TemplateCatalogEntry) -> FormTemplateOut:
-    return FormTemplateOut(
-        id=entry.id, name=entry.name, description=entry.description,
-        version=1, active=True, has_items=entry.has_items,
-        fields=[
-            FormFieldOut(
-                id="", key=f.key, label=f.label, type=f.type, required=False, position=i,
-                extraction_hint=f.extraction_hint, options=f.options,
-                is_item_field=f.is_item_field,
-            )
-            for i, f in enumerate(entry.fields)
-        ],
-    )
-
-
-@router.post("/auto", response_model=AutoExtractResponse)
-async def extract_auto(payload: AutoExtractRequest):
-    """Fluxo novo: o app manda a captura — uma ou mais fotos, e/ou um áudio,
-    e/ou um texto digitado, podendo combinar tudo na mesma captura — sem
-    escolher formulário antes.
-    1. transcreve o áudio, se houver;
-    2. pede pra IA classificar entre os templates existentes (usando todas
-       as fontes fornecidas em conjunto), ou propor um novo;
-    3. se propôs novo, grava no banco (pending de revisão, mas já utilizável);
-    4. extrai os campos (ou itens, se has_items=True) pro template resolvido,
-       usando as mesmas fontes combinadas."""
-    try:
-        has_text = bool(payload.text and payload.text.strip())
-        has_audio = payload.audio is not None
-        has_photos = bool(payload.photos)
-        if not has_text and not has_audio and not has_photos:
-            raise HTTPException(
-                status_code=422, detail="Envie ao menos uma foto, uma gravação ou um texto."
-            )
-
-        texts: list[tuple[str, str]] = []
-        used_whisper = False
-
-        if has_audio:
-            audio_bytes = _decode_media_item(payload.audio, label="Áudio")
-            transcript = await groq_service.transcribe_audio(audio_bytes, payload.audio.mime_type)
-            used_whisper = True
-            if transcript and transcript.strip():
-                texts.append(("audio", transcript.strip()))
-
-        if has_text:
-            texts.append(("text", payload.text.strip()))
-
-        images: list[tuple[bytes, str]] = [
-            (_decode_media_item(photo, label=f"Foto {i + 1}"), photo.mime_type)
-            for i, photo in enumerate(payload.photos)
-        ]
-
-        if not texts and not images:
-            # Só acontece se a única fonte era áudio e a transcrição veio vazia
-            # (ex: gravação silenciosa) — sem isso o app trava sem explicação.
-            raise HTTPException(
-                status_code=422,
-                detail="Não conseguimos identificar conteúdo na gravação. Tente falar mais perto do microfone ou escrever a informação.",
-            )
-
-        catalog = _load_catalog()
-        classification = await gemini_service.classify_or_propose(
-            catalog, texts=texts, images=images,
-        )
-
-        template_is_new = classification.match == "new"
-        new_field_keys: list[str] = []
-        if template_is_new:
-            if not classification.new_template:
-                raise HTTPException(
-                    status_code=422,
-                    detail="A IA indicou 'new' mas não propôs um template.",
-                )
-            template = _create_dynamic_template(classification.new_template)
+            print(f"[extract/discovery] Gemini multimodal combinado: {t1 - t0:.1f}s", flush=True)
         else:
-            entry = next((t for t in catalog if t.id == classification.template_id), None)
-            if entry is None:
-                raise HTTPException(
-                    status_code=422,
-                    detail=(
-                        f"A IA apontou o template {classification.template_id}, mas ele "
-                        "não foi encontrado no catálogo carregado."
-                    ),
-                )
-            template = _catalog_entry_to_template_out(entry)
-
-            # Template já existia, mas a IA pode ter percebido que falta algo
-            # essencial pro conteúdo específico desta captura (ex: nota
-            # fiscal sem "emissor"/"destinatário"). Grava esses campos no
-            # template e já inclui no `fields` usado pra extração abaixo —
-            # assim eles saem preenchidos na mesma passada, sem chamada extra.
-            new_field_keys = _persist_suggested_fields(
-                entry.id, entry.fields, classification.suggested_fields,
+            result = await gemini_service.discover_and_extract_from_media(
+                content, file.content_type
             )
-            if new_field_keys:
-                added = [f for f in classification.suggested_fields if f.key in new_field_keys]
-                template.fields.extend([
-                    FormFieldOut(
-                        id="", key=f.key, label=f.label, type=f.type, required=False,
-                        position=len(template.fields) + i, extraction_hint=f.extraction_hint,
-                        options=f.options, is_item_field=f.is_item_field, source="ai_generated",
-                    )
-                    for i, f in enumerate(added)
-                ])
+            t1 = time.monotonic()
+            print(f"[extract/discovery] Gemini foto: {t1 - t0:.1f}s", flush=True)
+    except Exception as e:
+        logger.exception("Falha na descoberta (%s)", media_type)
+        return DiscoveryResult(
+            success=False, fields=[], provider="gemini",
+            model="gemini-2.0-flash-lite", error=str(e), mode="discovery",
+        )
+    return result
 
-        fields = [
-            FieldHint(
-                key=f.key, label=f.label, type=f.type,
-                extraction_hint=f.extraction_hint, is_item_field=f.is_item_field,
+
+# ENDPOINT PARA TEXTO PURO (digitado pelo usuario)
+
+@router.post("/text/")
+async def extract_from_raw_text(
+    text: str = Form(...),
+    fields_json: Optional[str] = Form(None),
+):
+    """Recebe texto digitado pelo usuario e processa via IA.
+    Modo descoberta por padrao — nao ha arquivo de midia."""
+    t0 = time.monotonic()
+
+    if fields_json is not None:
+        try:
+            fields = [FieldHint(**f) for f in json.loads(fields_json)]
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"fields_json invalido: {e}")
+        try:
+            extracted = await gemini_service.extract_from_text(fields, text)
+            t1 = time.monotonic()
+            print(f"[extract/text/guided] Gemini: {t1 - t0:.1f}s", flush=True)
+        except Exception as e:
+            logger.exception("Falha na extracao de texto guiada")
+            return DiscoveryResult(
+                success=False, fields=[], provider="gemini",
+                model="gemini-2.0-flash-lite", error=str(e), mode="guided",
             )
-            for f in template.fields
-        ]
-        flat, items = await gemini_service.extract_for_template(
-            fields, template.has_items, texts=texts, images=images,
-        )
-
-        model = (
-            f"whisper-large-v3 + {gemini_service.MODEL}"
-            if used_whisper else gemini_service.MODEL
-        )
-
-        return AutoExtractResponse(
+        return DiscoveryResult(
             success=True,
-            template_id=template.id,
-            template_name=template.name,
-            template_is_new=template_is_new,
-            has_items=template.has_items,
-            fields=flat,
-            items=items,
+            fields=[DiscoveredField(
+                key=f.key, label=f.key.replace("_", " ").title(),
+                type="text", value=f.value, confidence=f.confidence,
+            ) for f in extracted],
             provider="gemini",
-            model=model,
-            new_field_keys=new_field_keys,
-            # devolve o template completo via header seria estranho — o app
-            # busca com GET /templates/{id} logo em seguida (já tem cache).
+            model="gemini-2.0-flash-lite",
+            mode="guided",
         )
-    except HTTPException:
-        raise
-    except ExtractionError as e:
-        logger.warning("Extração automática falhou: %s", e)
-        return AutoExtractResponse(
-            success=False, template_id="", template_name="", template_is_new=False,
-            has_items=False, fields=[], items=[], provider="gemini",
-            model=gemini_service.MODEL, error=str(e), retryable=e.retryable,
+
+    try:
+        result = await gemini_service.discover_and_extract_from_text(text)
+        t1 = time.monotonic()
+        print(f"[extract/text/discovery] Gemini: {t1 - t0:.1f}s", flush=True)
+    except Exception as e:
+        logger.exception("Falha na descoberta de texto")
+        return DiscoveryResult(
+            success=False, fields=[], provider="gemini",
+            model="gemini-2.0-flash-lite", error=str(e), mode="discovery",
         )
-    except Exception:
-        logger.exception("Falha na extração automática")
-        return AutoExtractResponse(
-            success=False, template_id="", template_name="", template_is_new=False,
-            has_items=False, fields=[], items=[], provider="gemini",
-            model=gemini_service.MODEL,
-            error="Falha inesperada ao processar a captura. Tente novamente.",
-        )
+    return result
