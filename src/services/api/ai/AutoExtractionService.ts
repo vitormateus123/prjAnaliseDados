@@ -14,7 +14,7 @@
 // limite de 10MB por arquivo já validado no backend).
 
 import * as FileSystem from 'expo-file-system/legacy';
-import { AutoExtractionResult } from '../../../types/reports';
+import { AutoExtractionResult, ExtractionPurpose } from '../../../types/reports';
 import { apiFetch } from '../apiClient';
 
 interface MediaItemPayload {
@@ -33,14 +33,15 @@ export interface AutoExtractInput {
   audioUri?: string | null;
   audioMimeType?: string | null;
   text?: string | null;
+  // Finalidade escolhida na tela de captura — só orienta a IA, ver
+  // ExtractionPurpose. customInstruction só importa quando purpose='OTHER'.
+  purpose?: ExtractionPurpose | null;
+  customInstruction?: string | null;
 }
 
 const EMPTY_RESULT_BASE: Omit<AutoExtractionResult, 'error' | 'retryable'> = {
   success: false,
-  template_id: '',
-  template_name: '',
-  template_is_new: false,
-  has_items: false,
+  structure_mode: 'guided',
   fields: [],
   items: [],
 };
@@ -77,6 +78,8 @@ export async function autoExtractCombined(input: AutoExtractInput): Promise<Auto
       photos: photoItems,
       audio: audioItem,
       text: hasText ? (input.text as string).trim() : null,
+      purpose: input.purpose ?? null,
+      custom_instruction: input.customInstruction?.trim() || null,
     };
 
     return await apiFetch<AutoExtractionResult>('/extract/auto', {

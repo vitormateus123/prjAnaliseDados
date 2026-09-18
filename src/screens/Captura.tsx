@@ -18,10 +18,23 @@ import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
 import { fetchFormTemplateById } from '../services/api/forms/TemplatesService';
 import { FormTemplate } from '../types/forms';
-import { AutoExtractionResult, Capture, Report } from '../types/reports';
-import { buildReportFields, buildReportItems, emptyReportItem } from '../utils/reportBuilder';
+import { AutoExtractionResult, Capture, ExtractionPurpose, Report, ReportField, ReportItem } from '../types/reports';
+import {
+  buildDynamicReportFields, buildDynamicReportItems,
+  buildReportFields, buildReportItems, emptyReportItem,
+} from '../utils/reportBuilder';
 import { styles as shared } from '../styles';
 import { colors, gradients, radius, shadows, spacing } from '../theme';
+
+// Opções de finalidade mostradas na captura automática — só orientam a IA
+// (ver _AUTO_PROMPT no backend), não definem campos nem viram formulário.
+const PURPOSE_OPTIONS: Array<{ value: ExtractionPurpose; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
+  { value: 'STOCK_COUNT', label: 'Contagem de estoque', icon: 'cube-outline' },
+  { value: 'DOCUMENT_ANALYSIS', label: 'Análise de documento', icon: 'document-text-outline' },
+  { value: 'REPORT', label: 'Relatório', icon: 'alert-circle-outline' },
+  { value: 'SCENE_OBJECT_PERSON_ANALYSIS', label: 'Cenário, objeto ou pessoa', icon: 'eye-outline' },
+  { value: 'OTHER', label: 'Outros', icon: 'ellipsis-horizontal-outline' },
+];
 
 // A entrada principal é sempre livre: foto(s), áudio e texto podem ser
 // combinados e a IA decide internamente como estruturar a informação.
@@ -45,6 +58,8 @@ export default function CapturaScreen() {
   const [stagedPhotos, setStagedPhotos] = useState<StagedPhoto[]>([]);
   const [stagedAudio, setStagedAudio] = useState<{ uri: string; mimeType: string } | null>(null);
   const [stagedText, setStagedText] = useState('');
+  const [purpose, setPurpose] = useState<ExtractionPurpose | null>(null);
+  const [customInstruction, setCustomInstruction] = useState('');
 
   const hasStaged = stagedPhotos.length > 0 || !!stagedAudio || stagedText.trim().length > 0;
 
@@ -52,6 +67,8 @@ export default function CapturaScreen() {
     setStagedPhotos([]);
     setStagedAudio(null);
     setStagedText('');
+    setPurpose(null);
+    setCustomInstruction('');
   }
 
   async function persistUnstructuredReport(captures: Capture[]) {
@@ -59,6 +76,8 @@ export default function CapturaScreen() {
     const report: Report = {
       id: Crypto.randomUUID(),
       context_label: 'Informação recebida',
+      extraction_purpose: purpose,
+      extraction_custom_instruction: purpose === 'OTHER' ? customInstruction.trim() || null : null,
       status: 'draft',
       fields: [],
       items: [],
@@ -69,6 +88,33 @@ export default function CapturaScreen() {
     await StorageService.upsertReport(report);
     clearStaged();
     navigation.navigate('Revisao', { reportId: report.id, extractionFailed: true });
+  }
+
+  // Relatório sem template (structure_mode='dynamic') — a IA já devolveu os
+  // campos/itens prontos, só falta montar o Report e mandar pra Revisão.
+  async function persistDynamicReport(
+    captures: Capture[],
+    auto: AutoExtractionResult,
+    flatFields: ReportField[],
+    items: ReportItem[],
+  ) {
+    const now = new Date().toISOString();
+    const report: Report = {
+      id: Crypto.randomUUID(),
+      context_label: auto.context_label ?? 'Informação organizada',
+      context_type: auto.context_type ?? null,
+      extraction_purpose: purpose,
+      extraction_custom_instruction: purpose === 'OTHER' ? customInstruction.trim() || null : null,
+      status: 'draft',
+      fields: flatFields,
+      items,
+      captures,
+      created_at: now,
+      updated_at: now,
+    };
+    await StorageService.upsertReport(report);
+    clearStaged();
+    navigation.navigate('Revisao', { reportId: report.id, extractionFailed: false });
   }
 
   // Pulso suave ao redor do botão de gravação enquanto o áudio está ativo —
@@ -120,6 +166,10 @@ export default function CapturaScreen() {
       id: Crypto.randomUUID(),
       form_template_id: resolvedTemplate.id,
       form_template_name: resolvedTemplate.name,
+      // isAutoMode: veio da tela de finalidade. Modo manual (formTemplateId
+      // escolhido em FormSelectScreen) nunca passa por lá — fica null.
+      extraction_purpose: isAutoMode ? purpose : null,
+      extraction_custom_instruction: isAutoMode && purpose === 'OTHER' ? customInstruction.trim() || null : null,
       status: 'draft',
       fields: flatFields,
       items,
@@ -231,8 +281,30 @@ export default function CapturaScreen() {
     auto: AutoExtractionResult,
     retry: () => void,
   ) {
-    if (!auto.success || !auto.template_id) {
+    if (!auto.success) {
       if (__DEV__) console.warn('[Captura] extração automática falhou:', auto.error);
+      finishFailureAlert(captures, retry);
+      return;
+    }
+
+    // ─── sem template: a IA estruturou os campos/itens diretamente ───────
+    if (auto.structure_mode === 'dynamic') {
+      const flatFields = buildDynamicReportFields(auto.dynamic_fields ?? []);
+      const items = buildDynamicReportItems(auto.dynamic_items ?? []);
+      if (flatFields.length === 0 && items.length === 0) {
+        finishFailureAlert(captures, retry);
+        return;
+      }
+      Alert.alert(
+        'Informação organizada',
+        'Organizamos esta informação sem um formulário fixo. Confira os dados antes de salvar.',
+      );
+      await persistDynamicReport(captures, auto, flatFields, items);
+      return;
+    }
+
+    // ─── formulário reaproveitado do catálogo ─────────────────────────────
+    if (!auto.template_id) {
       finishFailureAlert(captures, retry);
       return;
     }
@@ -249,15 +321,10 @@ export default function CapturaScreen() {
     const flatTemplateFields = resolvedTemplate.fields.filter((f) => !f.is_item_field);
     const itemTemplateFields = resolvedTemplate.fields.filter((f) => f.is_item_field);
 
-    const flatFields = buildReportFields(flatTemplateFields, auto.fields);
-    const items = auto.has_items ? buildReportItems(itemTemplateFields, auto.items) : [];
+    const flatFields = buildReportFields(flatTemplateFields, auto.fields ?? []);
+    const items = auto.has_items ? buildReportItems(itemTemplateFields, auto.items ?? []) : [];
 
-    if (auto.template_is_new) {
-      Alert.alert(
-        'Informação organizada',
-        'Encontramos uma nova forma de organizar esta informação. Confira os dados antes de salvar.',
-      );
-    } else if (auto.new_field_keys && auto.new_field_keys.length > 0) {
+    if (auto.new_field_keys && auto.new_field_keys.length > 0) {
       Alert.alert(
         'Mais informações encontradas',
         'Incluímos informações adicionais para você revisar antes de salvar.',
@@ -304,6 +371,8 @@ export default function CapturaScreen() {
         audioUri: stagedAudio?.uri,
         audioMimeType: stagedAudio?.mimeType,
         text: stagedText,
+        purpose,
+        customInstruction: purpose === 'OTHER' ? customInstruction : null,
       });
       await finishAutoCapture(captures, auto, () => submitStagedCapture());
     } finally {
@@ -494,6 +563,43 @@ export default function CapturaScreen() {
                   <Ionicons name="close-circle" size={16} color={colors.textMuted} />
                 </TouchableOpacity>
               </View>
+            )}
+
+            <Text style={local.purposeLabel}>Qual é a finalidade? (opcional)</Text>
+            <View style={local.purposeRow}>
+              {PURPOSE_OPTIONS.map((option) => {
+                const selected = purpose === option.value;
+                return (
+                  <TouchableOpacity
+                    key={option.value}
+                    style={[local.purposeChip, selected && local.purposeChipSelected]}
+                    onPress={() => setPurpose(selected ? null : option.value)}
+                    disabled={isProcessing}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons
+                      name={option.icon}
+                      size={14}
+                      color={selected ? colors.textOnPrimary : colors.textSecondary}
+                    />
+                    <Text style={[local.purposeChipText, selected && local.purposeChipTextSelected]}>
+                      {option.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {purpose === 'OTHER' && (
+              <TextInput
+                style={[shared.input, local.purposeInstructionInput]}
+                value={customInstruction}
+                onChangeText={setCustomInstruction}
+                placeholder="Descreva o que você quer, ex: identificar produtos próximos da validade"
+                placeholderTextColor={colors.textMuted}
+                multiline
+                editable={!isProcessing}
+              />
             )}
 
             <TouchableOpacity
@@ -721,6 +827,21 @@ const local = StyleSheet.create({
     paddingVertical: 6, paddingHorizontal: 10, alignSelf: 'flex-start', maxWidth: '100%',
   },
   stagedChipText: { fontSize: 12, fontWeight: '600', color: colors.textPrimary, flexShrink: 1 },
+  purposeLabel: {
+    fontSize: 12, fontWeight: '700', color: colors.textMuted,
+    marginTop: spacing.sm, marginBottom: spacing.xs,
+  },
+  purposeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: spacing.sm },
+  purposeChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    backgroundColor: colors.surface, borderRadius: radius.pill,
+    borderWidth: 1.5, borderColor: colors.border,
+    paddingVertical: 6, paddingHorizontal: 10,
+  },
+  purposeChipSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
+  purposeChipText: { fontSize: 12, fontWeight: '600', color: colors.textSecondary },
+  purposeChipTextSelected: { color: colors.textOnPrimary },
+  purposeInstructionInput: { minHeight: 64, textAlignVertical: 'top', marginBottom: spacing.sm },
   sendButton: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: colors.primary, borderRadius: radius.lg,

@@ -8,6 +8,7 @@ from typing import Optional
 from app.schemas.extraction import (
     ExtractResponse, FieldHint, ExtractedField,
     AutoExtractRequest, AutoExtractResponse, ExtractedItem,
+    DynamicExtractedField, DynamicExtractedItem, EXTRACTION_PURPOSES,
 )
 from app.schemas.discovery import DiscoveryResult, DiscoveredField
 from app.services import gemini_service, groq_service
@@ -212,57 +213,6 @@ def _fetch_template_catalog() -> list[dict]:
     return catalog
 
 
-def _create_template_from_proposal(new_template: dict) -> tuple[str, str, bool]:
-    """Cria o template que a IA propos (nenhum do catalogo servia). Fica como
-    source='ai_generated' + review_status='pending' — ja utilizavel de
-    imediato, mas listado em TemplatesRevisaoScreen para um humano confirmar."""
-    supabase = get_client()
-    has_items = bool(new_template.get("has_items", False))
-
-    template_resp = (
-        supabase.table("form_templates")
-        .insert({
-            "name": new_template.get("name") or "Formulário sem nome",
-            "description": new_template.get("description") or None,
-            "version": 1,
-            "active": True,
-            "has_items": has_items,
-            "source": "ai_generated",
-            "review_status": "pending",
-        })
-        .execute()
-    )
-    if not template_resp.data:
-        raise RuntimeError("Falha ao criar o formulário proposto pela IA.")
-    template_row = template_resp.data[0]
-
-    seen_keys: set[str] = set()
-    field_rows = []
-    for i, f in enumerate(new_template.get("fields") or []):
-        key = f.get("key")
-        if not key or key in seen_keys:
-            continue
-        seen_keys.add(key)
-        field_rows.append({
-            "form_template_id": template_row["id"],
-            "key": key,
-            "label": f.get("label") or key,
-            "type": _safe_field_type(f.get("type")),
-            "required": False,
-            "position": i,
-            "extraction_hint": f.get("extraction_hint"),
-            "options": f.get("options"),
-            "is_item_field": bool(f.get("is_item_field", False)),
-            "source": "ai_generated",
-        })
-    if field_rows:
-        fields_resp = supabase.table("form_fields").insert(field_rows).execute()
-        if not fields_resp.data:
-            raise RuntimeError("Formulário criado, mas falhou ao gravar os campos propostos.")
-
-    return template_row["id"], template_row["name"], has_items
-
-
 def _add_suggested_fields(template_id: str, suggested_fields: list[dict]) -> list[str]:
     """Preenche lacunas num template JA existente — ignora keys que ja
     existirem nele (evita duplicar em capturas repetidas do mesmo tipo)."""
@@ -307,8 +257,7 @@ def _add_suggested_fields(template_id: str, suggested_fields: list[dict]) -> lis
 
 def _auto_error(message: str, retryable: bool = True) -> AutoExtractResponse:
     return AutoExtractResponse(
-        success=False, template_id="", template_name="", template_is_new=False,
-        has_items=False, provider="gemini", model=_AUTO_MODEL,
+        success=False, provider="gemini", model=_AUTO_MODEL,
         error=message, retryable=retryable,
     )
 
@@ -316,10 +265,14 @@ def _auto_error(message: str, retryable: bool = True) -> AutoExtractResponse:
 @router.post("/auto", response_model=AutoExtractResponse)
 async def extract_auto(payload: AutoExtractRequest):
     """Fluxo automatico: recebe foto(s)/audio/texto de uma mesma captura (sem
-    template escolhido), classifica contra os formularios existentes — ou
-    propoe um novo — e ja extrai os valores. Tudo numa chamada."""
+    template escolhido). A IA classifica contra os formularios existentes
+    (match="existing") ou estrutura livremente, sem criar template novo
+    (match="dynamic") — e ja extrai os valores. Tudo numa chamada."""
     if not payload.photos and not payload.audio and not (payload.text or "").strip():
         return _auto_error("Nenhuma informação anexada para enviar.", retryable=False)
+
+    purpose = payload.purpose if payload.purpose in EXTRACTION_PURPOSES else None
+    custom_instruction = (payload.custom_instruction or "").strip() or None
 
     t0 = time.monotonic()
     try:
@@ -346,7 +299,9 @@ async def extract_auto(payload: AutoExtractRequest):
             combined_text = transcript or typed_text
 
         catalog = _fetch_template_catalog()
-        result = await gemini_service.classify_and_extract(catalog, photos_bytes, combined_text)
+        result = await gemini_service.classify_and_extract(
+            catalog, photos_bytes, combined_text, purpose, custom_instruction,
+        )
         t2 = time.monotonic()
         print(f"[extract/auto] Gemini classificação+extração: {t2 - t0:.1f}s", flush=True)
     except Exception as e:
@@ -355,15 +310,10 @@ async def extract_auto(payload: AutoExtractRequest):
 
     try:
         match = result.get("match")
-        new_field_keys: list[str] = []
 
-        if match == "new" and result.get("new_template", {}).get("name"):
-            template_id, template_name, has_items = _create_template_from_proposal(result["new_template"])
-            template_is_new = True
-        else:
-            template_id = result.get("template_id") or ""
-            if not template_id:
-                raise ValueError("A IA não retornou um template_id válido nem propôs um novo formulário.")
+        # ─── match="existing": reaproveita um formulário já cadastrado ───
+        if match == "existing" and result.get("template_id"):
+            template_id = result["template_id"]
             new_field_keys = _add_suggested_fields(template_id, result.get("suggested_fields") or [])
             template_row_resp = (
                 get_client().table("form_templates")
@@ -376,27 +326,47 @@ async def extract_auto(payload: AutoExtractRequest):
             template_row = template_row_resp.data[0]
             template_name = template_row["name"]
             has_items = bool(template_row.get("has_items", False))
-            template_is_new = False
 
-        fields = [ExtractedField(**f) for f in (result.get("fields") or [])]
-        items = (
-            [ExtractedItem(fields=[ExtractedField(**f) for f in (it.get("fields") or [])])
-             for it in (result.get("items") or [])]
-            if has_items else []
-        )
+            fields = [ExtractedField(**f) for f in (result.get("fields") or [])]
+            items = (
+                [ExtractedItem(fields=[ExtractedField(**f) for f in (it.get("fields") or [])])
+                 for it in (result.get("items") or [])]
+                if has_items else []
+            )
+
+            return AutoExtractResponse(
+                success=True,
+                structure_mode="guided",
+                template_id=template_id,
+                template_name=template_name,
+                has_items=has_items,
+                fields=fields,
+                items=items,
+                provider="gemini",
+                model=_AUTO_MODEL,
+                new_field_keys=new_field_keys,
+            )
+
+        # ─── match="dynamic" (ou fallback se a IA não indicou template_id
+        #     válido): estrutura livre, sem criar form_template ────────────
+        dynamic_fields = [DynamicExtractedField(**f) for f in (result.get("dynamic_fields") or [])]
+        dynamic_items = [
+            DynamicExtractedItem(fields=[DynamicExtractedField(**f) for f in (it.get("fields") or [])])
+            for it in (result.get("dynamic_items") or [])
+        ]
+        if not dynamic_fields and not dynamic_items:
+            raise ValueError("A IA não retornou nem um template válido nem uma estrutura dinâmica.")
 
         return AutoExtractResponse(
             success=True,
-            template_id=template_id,
-            template_name=template_name,
-            template_is_new=template_is_new,
-            has_items=has_items,
-            fields=fields,
-            items=items,
+            structure_mode="dynamic",
+            context_label=result.get("context_label") or None,
+            context_type=result.get("context_type") or None,
+            dynamic_fields=dynamic_fields,
+            dynamic_items=dynamic_items,
             provider="gemini",
             model=_AUTO_MODEL,
-            new_field_keys=new_field_keys,
         )
     except Exception as e:
-        logger.exception("Falha ao processar classificacao/criacao de template no modo automatico")
+        logger.exception("Falha ao processar classificacao/estruturacao no modo automatico")
         return _auto_error(f"Erro ao interpretar resposta da IA: {e}")

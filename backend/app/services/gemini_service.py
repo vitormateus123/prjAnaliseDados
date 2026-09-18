@@ -298,11 +298,60 @@ async def discover_and_extract_multimodal(
         )
 
 
-# ─── MODO AUTOMÁTICO (classifica contra templates existentes ou propõe um novo) ─
+# ─── MODO AUTOMÁTICO (classifica contra templates existentes OU estrutura dinamicamente) ─
 # Usado pelo endpoint POST /extract/auto. Numa única chamada, a IA decide se
 # a captura se encaixa em algum form_template já cadastrado (devolvendo só o
-# id + eventuais campos que faltavam nele) ou se nenhum serve e um template
-# novo deve ser proposto — e já extrai os valores encontrados.
+# id + eventuais campos que faltavam nele) ou se nenhum serve — e nesse caso
+# NÃO cria um form_template novo: estrutura a informação livremente
+# (dynamic_fields/dynamic_items), do mesmo jeito que o modo descoberta
+# (discover_and_extract_*), só que já escolhendo entre reaproveitar um
+# formulário existente ou ir pro caminho dinâmico numa única chamada.
+
+# Blocos de orientação por finalidade — só entram no prompt quando o
+# usuário escolheu uma finalidade na tela de captura (payload.purpose).
+# Não definem campos: só dizem à IA o que procurar.
+_PURPOSE_GUIDANCE = {
+    "STOCK_COUNT": (
+        "Contagem de estoque: identifique, conte ou organize itens de estoque "
+        "(produtos, quantidades, unidades, localização quando houver). Cada "
+        "produto identificado deve virar um item (is_item_field=true nos "
+        "campos que se repetem por produto, como produto/quantidade/unidade)."
+    ),
+    "DOCUMENT_ANALYSIS": (
+        "Análise de documento: o conteúdo é um documento (nota fiscal, "
+        "formulário, recibo, relatório, lista, documento fotografado etc). "
+        "Identifique dinamicamente quais informações desse documento são "
+        "relevantes — não existe um conjunto fixo de campos para 'documento'."
+    ),
+    "REPORT": (
+        "Relatório: o usuário está registrando uma ocorrência, situação, "
+        "problema ou inspeção. Identifique informações como ocorrência, "
+        "local, problema, impacto, providências, observações — SOMENTE as "
+        "que realmente estiverem presentes ou puderem ser inferidas."
+    ),
+    "SCENE_OBJECT_PERSON_ANALYSIS": (
+        "Análise de cenário, objeto ou pessoa: descreva o que pode ser "
+        "observado ou inferido de forma justificável sobre o ambiente, "
+        "objeto, equipamento ou pessoa capturado. Não invente características "
+        "que não podem ser observadas."
+    ),
+    "OTHER": (
+        "Outros — o usuário descreveu livremente o que quer (ver instrução "
+        "adicional abaixo). Siga essa instrução como guia principal do que "
+        "extrair/estruturar."
+    ),
+}
+
+
+def _build_purpose_block(purpose: str | None, custom_instruction: str | None) -> str:
+    if not purpose:
+        return ""
+    guidance = _PURPOSE_GUIDANCE.get(purpose, "")
+    block = f"\n\nFINALIDADE DA EXTRAÇÃO (informada pelo usuário — é só orientação, NÃO define campos fixos nem limita a estrutura):\n{guidance}"
+    if purpose == "OTHER" and custom_instruction:
+        block += f"\n\nINSTRUÇÃO ADICIONAL DO USUÁRIO:\n{custom_instruction}"
+    return block
+
 
 _AUTO_PROMPT = """Você é um assistente que recebe uma captura de campo (foto e/ou texto — que pode ser transcrição de áudio ou digitado) e decide como estruturá-la dentro de um sistema de formulários dinâmico.
 
@@ -310,11 +359,12 @@ FORMULÁRIOS JÁ CADASTRADOS (catálogo, em JSON):
 {catalog_json}
 
 SEU TRABALHO, EM UMA ÚNICA RESPOSTA:
-1. Decida se o conteúdo se encaixa em algum formulário do catálogo acima (match="existing") ou se nenhum deles serve e um formulário novo precisa ser criado (match="new"). Prefira reaproveitar um formulário existente sempre que o conteúdo for do mesmo tipo, mesmo que falte algum campo.
-2. Se match="existing": preencha "template_id" com o id exato do formulário escolhido (copiado do catálogo). Se esse formulário não tiver algum campo essencial para o conteúdo (ex.: uma nota fiscal sem campo "emissor"), liste esse(s) campo(s) em "suggested_fields" no mesmo formato dos campos do catálogo — isso NÃO é motivo para propor um formulário novo. Deixe "new_template" com name="" e fields=[].
-3. Se match="new": preencha "new_template" com nome, descrição, has_items e os campos propostos. Deixe "template_id"="" e "suggested_fields"=[].
-4. Em "fields", extraia os valores encontrados no conteúdo para os campos de nível de relatório (do template escolhido + suggested_fields, ou do novo template) — apenas os que NÃO são is_item_field.
-5. Se o formulário (existente ou novo) tiver has_items=true, retorne também "items": uma lista onde cada item tem seus próprios "fields", contendo só os campos marcados is_item_field. Se has_items=false, retorne "items": [].
+1. Decida se o conteúdo se encaixa em algum formulário do catálogo acima (match="existing") ou se nenhum deles serve (match="dynamic"). Prefira reaproveitar um formulário existente sempre que o conteúdo for genuinamente do mesmo tipo, mesmo que falte algum campo — isso evita recriar a mesma estrutura a cada captura parecida. Mas NÃO force o conteúdo dentro de um formulário do catálogo só porque existe um remotamente parecido: se a finalidade informada ou o conteúdo indicam outra coisa, prefira match="dynamic".
+2. Se match="existing": preencha "template_id" com o id exato do formulário escolhido (copiado do catálogo). Se esse formulário não tiver algum campo essencial para o conteúdo (ex.: uma nota fiscal sem campo "emissor"), liste esse(s) campo(s) em "suggested_fields" no mesmo formato dos campos do catálogo — isso NÃO é motivo para trocar para match="dynamic". Deixe "dynamic_fields"=[] e "dynamic_items"=[].
+3. Se match="dynamic": estruture a informação livremente, sem se prender a nenhum formulário — decida você mesmo quais campos existem, a partir do conteúdo (e da finalidade informada, se houver). Preencha "context_label" (descrição curta e legível, ex: "Contagem de estoque — depósito A") e "context_type" (slug curto, ex: "contagem_estoque"). Coloque os campos únicos do relatório em "dynamic_fields" e, se o conteúdo tiver itens repetidos (ex: vários produtos), cada item em "dynamic_items" (cada um com seus próprios "fields"). Se não houver itens repetidos, "dynamic_items"=[]. Deixe "template_id"="" e "suggested_fields"=[].
+4. Em "fields" (modo existing), extraia os valores encontrados no conteúdo para os campos de nível de relatório (do template escolhido + suggested_fields) — apenas os que NÃO são is_item_field.
+5. Se o formulário existente tiver has_items=true, retorne também "items": uma lista onde cada item tem seus próprios "fields", contendo só os campos marcados is_item_field. Se has_items=false, retorne "items": [].
+{purpose_block}
 
 REGRAS:
 - Nunca invente informações que não estão no conteúdo.
@@ -350,21 +400,24 @@ _AUTO_EXTRACTED_FIELD_SCHEMA = {
     "required": ["key", "value", "confidence"],
 }
 
+_AUTO_DYNAMIC_FIELD_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "key": {"type": "STRING"},
+        "label": {"type": "STRING"},
+        "type": {"type": "STRING"},
+        "value": {"type": "STRING"},
+        "confidence": {"type": "NUMBER"},
+        "source": {"type": "STRING"},
+    },
+    "required": ["key", "label", "type", "value", "confidence"],
+}
+
 _AUTO_RESPONSE_SCHEMA = {
     "type": "OBJECT",
     "properties": {
         "match": {"type": "STRING"},
         "template_id": {"type": "STRING"},
-        "new_template": {
-            "type": "OBJECT",
-            "properties": {
-                "name": {"type": "STRING"},
-                "description": {"type": "STRING"},
-                "has_items": {"type": "BOOLEAN"},
-                "fields": {"type": "ARRAY", "items": _AUTO_FIELD_SPEC_SCHEMA},
-            },
-            "required": ["name", "fields"],
-        },
         "suggested_fields": {"type": "ARRAY", "items": _AUTO_FIELD_SPEC_SCHEMA},
         "fields": {"type": "ARRAY", "items": _AUTO_EXTRACTED_FIELD_SCHEMA},
         "items": {
@@ -375,8 +428,22 @@ _AUTO_RESPONSE_SCHEMA = {
                 "required": ["fields"],
             },
         },
+        "context_label": {"type": "STRING"},
+        "context_type": {"type": "STRING"},
+        "dynamic_fields": {"type": "ARRAY", "items": _AUTO_DYNAMIC_FIELD_SCHEMA},
+        "dynamic_items": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {"fields": {"type": "ARRAY", "items": _AUTO_DYNAMIC_FIELD_SCHEMA}},
+                "required": ["fields"],
+            },
+        },
     },
-    "required": ["match", "template_id", "new_template", "suggested_fields", "fields", "items"],
+    "required": [
+        "match", "template_id", "suggested_fields", "fields", "items",
+        "context_label", "context_type", "dynamic_fields", "dynamic_items",
+    ],
 }
 
 
@@ -391,12 +458,17 @@ async def classify_and_extract(
     catalog: list[dict],
     photos: list[tuple[bytes, str]],
     text: str | None,
+    purpose: str | None = None,
+    custom_instruction: str | None = None,
 ) -> dict:
-    """Classifica a captura contra o catálogo de formulários (ou propõe um
-    novo) e já extrai os valores encontrados — tudo numa única chamada.
-    Retorna o dict cru (ver _AUTO_RESPONSE_SCHEMA); quem chama
-    (routes/extract.py) decide o que fazer no banco a partir dele."""
-    prompt = _AUTO_PROMPT.format(catalog_json=json.dumps(catalog, ensure_ascii=False))
+    """Classifica a captura contra o catálogo de formulários OU estrutura
+    dinamicamente (sem template) — e já extrai os valores encontrados, tudo
+    numa única chamada. Retorna o dict cru (ver _AUTO_RESPONSE_SCHEMA); quem
+    chama (routes/extract.py) decide o que fazer no banco a partir dele."""
+    prompt = _AUTO_PROMPT.format(
+        catalog_json=json.dumps(catalog, ensure_ascii=False),
+        purpose_block=_build_purpose_block(purpose, custom_instruction),
+    )
     if text:
         prompt += f"\n\nCONTEÚDO DE ÁUDIO/TEXTO (transcrição ou texto digitado):\n{text}"
     if photos:

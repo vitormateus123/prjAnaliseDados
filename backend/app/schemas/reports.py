@@ -38,6 +38,10 @@ class ReportIn(BaseModel):
     form_template_name: Optional[str] = None
     context_label: Optional[str] = None       # ex: "Nota Fiscal"
     context_type: Optional[str] = None        # ex: "nota_fiscal"
+    # Finalidade escolhida pelo usuário antes de capturar (ver
+    # EXTRACTION_PURPOSES em schemas/extraction.py) — só contexto/auditoria.
+    extraction_purpose: Optional[str] = None
+    extraction_custom_instruction: Optional[str] = None
     status: str
     fields: list[ReportFieldIn] = []
     items: list[ReportItemIn] = []
@@ -79,6 +83,8 @@ class ReportOut(BaseModel):
     form_template_name: Optional[str] = None
     context_label: Optional[str] = None
     context_type: Optional[str] = None
+    extraction_purpose: Optional[str] = None
+    extraction_custom_instruction: Optional[str] = None
     status: str
     fields: list[ReportFieldOut] = []
     items: list[ReportItemOut] = []

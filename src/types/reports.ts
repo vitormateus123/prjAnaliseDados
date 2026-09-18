@@ -6,6 +6,16 @@ export type ReportStatus = 'draft' | 'pending_sync' | 'synced' | 'error';
 export type CaptureType = 'voice' | 'photo' | 'text' | 'manual';
 export type FieldSource = 'ai' | 'manual' | 'ai_edited';
 
+// Finalidade que o usuário escolhe antes de capturar, na captura automática
+// — só orienta a IA (ver _AUTO_PROMPT no backend), não define campos nem
+// funciona como template. 'OTHER' vem sempre acompanhado de customInstruction.
+export type ExtractionPurpose =
+  | 'STOCK_COUNT'
+  | 'DOCUMENT_ANALYSIS'
+  | 'REPORT'
+  | 'SCENE_OBJECT_PERSON_ANALYSIS'
+  | 'OTHER';
+
 // Representa um valor de campo — usa discriminated union para segurança de tipos
 export type FieldValue =
   | { type: 'text'; value: string }
@@ -73,14 +83,43 @@ export interface AutoExtractedItem {
   fields: AutoExtractedField[];
 }
 
+// Campo sem template (structure_mode='dynamic') — carrega label/type
+// próprios, já que não há form_field para consultá-los.
+export interface DynamicExtractedField extends AutoExtractedField {
+  label: string;
+  type: FieldType;
+}
+
+export interface DynamicExtractedItem {
+  fields: DynamicExtractedField[];
+}
+
 export interface AutoExtractionResult {
   success: boolean;
-  template_id: string;
-  template_name: string;
-  template_is_new: boolean;
-  has_items: boolean;
-  fields: AutoExtractedField[];
-  items: AutoExtractedItem[];
+  // 'guided'  = a IA encaixou (ou completou) um form_template já
+  //             cadastrado — usar template_id/fields/items.
+  // 'dynamic' = nada do catálogo servia — a IA estruturou livremente,
+  //             sem template — usar context_label/dynamic_fields/dynamic_items.
+  structure_mode: 'guided' | 'dynamic';
+
+  // ─── structure_mode === 'guided' ───
+  template_id?: string;
+  template_name?: string;
+  has_items?: boolean;
+  fields?: AutoExtractedField[];
+  items?: AutoExtractedItem[];
+  // Keys dos campos que a IA acabou de adicionar a um template EXISTENTE
+  // porque percebeu que faltava algo essencial pro conteúdo capturado (ex:
+  // nota fiscal sem "emissor"). Vazio quando o template já cobria bem o
+  // conteúdo.
+  new_field_keys?: string[];
+
+  // ─── structure_mode === 'dynamic' ───
+  context_label?: string;
+  context_type?: string;
+  dynamic_fields?: DynamicExtractedField[];
+  dynamic_items?: DynamicExtractedItem[];
+
   error?: string;
   // true = vale a pena chamar /extract/auto de novo com a mesma mídia
   // (ex: sobrecarga momentânea da IA); false = tentar de novo sozinho
@@ -88,11 +127,6 @@ export interface AutoExtractionResult {
   retryable?: boolean;
   provider?: string;
   model?: string;
-  // Keys dos campos que a IA acabou de adicionar a um template EXISTENTE
-  // porque percebeu que faltava algo essencial pro conteúdo capturado (ex:
-  // nota fiscal sem "emissor"). Vazio quando template_is_new=true ou quando
-  // o template escolhido já cobria bem o conteúdo.
-  new_field_keys?: string[];
 }
 
 // Um item dentro de um relatório com has_items=true (ex: cada produto
@@ -109,6 +143,10 @@ export interface Report {
   form_template_name?: string | null;  // cache para exibição no histórico
   context_label?: string | null;
   context_type?: string | null;
+  // Finalidade escolhida pelo usuário antes de capturar (tela de Captura,
+  // modo automático) — só contexto/auditoria, ver ExtractionPurpose acima.
+  extraction_purpose?: ExtractionPurpose | null;
+  extraction_custom_instruction?: string | null;
   status: ReportStatus;
   fields: ReportField[];
   items: ReportItem[];         // só preenchido quando o template tem has_items=true

@@ -5,7 +5,7 @@
 // duplicar essa lógica nos dois lugares.
 import * as Crypto from 'expo-crypto';
 import { FormField } from '../types/forms';
-import { ReportField, ReportItem } from '../types/reports';
+import { DynamicExtractedField, ReportField, ReportItem } from '../types/reports';
 import { emptyFieldValue, parseFieldValue } from './fieldValue';
 
 interface ExtractedFieldLike {
@@ -62,5 +62,34 @@ export function buildReportItems(
   return extractedItems.map((it) => ({
     id: Crypto.randomUUID(),
     fields: buildReportFields(itemFields, it.fields),
+  }));
+}
+
+// ─── modo dinâmico (/extract/auto com structure_mode='dynamic') ──────────
+// Sem FormField/template por trás — cada campo já vem com sua própria
+// label/type, direto da IA. form_field_id fica null (ver ReportField).
+
+export function buildDynamicReportFields(
+  extractedFields: DynamicExtractedField[],
+): ReportField[] {
+  return extractedFields.map((f) => ({
+    form_field_id: null,
+    key: f.key,
+    label: f.label,
+    field_value: parseFieldValue(f.type, f.value),
+    confidence: f.confidence,
+    source: 'ai',
+    was_edited: false,
+    input_source: f.source ?? null,
+    dynamic_type: f.type,
+  }));
+}
+
+export function buildDynamicReportItems(
+  extractedItems: Array<{ fields: DynamicExtractedField[] }>,
+): ReportItem[] {
+  return extractedItems.map((it) => ({
+    id: Crypto.randomUUID(),
+    fields: buildDynamicReportFields(it.fields),
   }));
 }
