@@ -1,10 +1,17 @@
-// App.tsx
 import { useEffect } from 'react';
-import { NavigationContainer, DefaultTheme } from '@react-navigation/native';
-import { createNativeStackNavigator } from '@react-navigation/native-stack';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import {
+  NavigationContainer,
+  DefaultTheme,
+} from '@react-navigation/native';
+import {
+  createNativeStackNavigator,
+} from '@react-navigation/native-stack';
+import {
+  createBottomTabNavigator,
+} from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 
+import WelcomeScreen from './src/screens/Welcome';
 import CapturaScreen from './src/screens/Captura';
 import { RevisaoScreen } from './src/screens/RevisaoScreen';
 import HistoricoScreen from './src/screens/Historico';
@@ -22,17 +29,30 @@ export type MainTabParamList = {
 
 // Pilha raiz do app
 export type RootStackParamList = {
-  Principal: { screen?: keyof MainTabParamList } | undefined;
-  // Parâmetro mantido só para compatibilidade com relatórios antigos. A UI
-  // principal nunca oferece escolha de formulário.
-  Captura: { formTemplateId?: string } | undefined;
-  Revisao: { reportId: string; extractionFailed?: boolean };
+  Welcome: undefined;
+  Principal:
+    | {
+        screen?: keyof MainTabParamList;
+      }
+    | undefined;
+  Captura:
+    | {
+        formTemplateId?: string;
+      }
+    | undefined;
+  Revisao: {
+    reportId: string;
+    extractionFailed?: boolean;
+  };
   TemplatesRevisao: undefined;
   GerenciarFormularios: undefined;
 };
 
-const Stack = createNativeStackNavigator<RootStackParamList>();
-const Tab = createBottomTabNavigator<MainTabParamList>();
+const Stack =
+  createNativeStackNavigator<RootStackParamList>();
+
+const Tab =
+  createBottomTabNavigator<MainTabParamList>();
 
 const navTheme = {
   ...DefaultTheme,
@@ -47,8 +67,16 @@ const navTheme = {
 };
 
 const screenHeaderOptions = {
-  headerStyle: { backgroundColor: colors.surface },
-  headerTitleStyle: { fontWeight: '800' as const, color: colors.textPrimary, fontSize: 17 },
+  headerStyle: {
+    backgroundColor: colors.surface,
+  },
+
+  headerTitleStyle: {
+    fontWeight: '800' as const,
+    color: colors.textPrimary,
+    fontSize: 17,
+  },
+
   headerTintColor: colors.primary,
   headerShadowVisible: false,
 };
@@ -58,68 +86,137 @@ function MainTabs() {
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
-        tabBarActiveTintColor: colors.primary,
-        tabBarInactiveTintColor: colors.textMuted,
-        tabBarLabelStyle: { fontSize: 11, fontWeight: '700', marginBottom: 4 },
+
+        tabBarActiveTintColor:
+          colors.primary,
+
+        tabBarInactiveTintColor:
+          colors.textMuted,
+
+        tabBarLabelStyle: {
+          fontSize: 11,
+          fontWeight: '700',
+          marginBottom: 4,
+        },
+
         tabBarStyle: {
-          backgroundColor: colors.surface,
-          borderTopColor: colors.border,
+          backgroundColor:
+            colors.surface,
+          borderTopColor:
+            colors.border,
           borderTopWidth: 1,
           height: 64,
           paddingTop: 8,
           paddingBottom: 10,
         },
-        tabBarIcon: ({ color, focused, size }) => {
+
+        tabBarIcon: ({
+          color,
+          focused,
+          size,
+        }) => {
           const iconName =
             route.name === 'Histórico'
-              ? focused ? 'time' : 'time-outline'
-              : focused ? 'settings' : 'settings-outline';
-          return <Ionicons name={iconName as any} size={size - 1} color={color} />;
+              ? focused
+                ? 'time'
+                : 'time-outline'
+              : focused
+                ? 'settings'
+                : 'settings-outline';
+
+          return (
+            <Ionicons
+              name={iconName as any}
+              size={size - 1}
+              color={color}
+            />
+          );
         },
       })}
     >
-      <Tab.Screen name="Histórico" component={HistoricoScreen} />
-      <Tab.Screen name="Ajustes" component={AjustesScreen} />
+      <Tab.Screen
+        name="Histórico"
+        component={HistoricoScreen}
+      />
+
+      <Tab.Screen
+        name="Ajustes"
+        component={AjustesScreen}
+      />
     </Tab.Navigator>
   );
 }
 
 export default function App() {
-  // Liga a sincronização automática em segundo plano uma única vez, pra
-  // valer em qualquer tela do app (não só quando o usuário está em
-  // Ajustes). Ver SyncService.startAutoSync para os gatilhos.
+  // Liga a sincronização automática em segundo plano
+  // uma única vez, pra valer em qualquer tela do app.
   useEffect(() => {
-    const stopAutoSync = startAutoSync();
+    const stopAutoSync =
+      startAutoSync();
+
     return stopAutoSync;
   }, []);
 
   return (
-    <NavigationContainer theme={navTheme}>
-      <Stack.Navigator screenOptions={screenHeaderOptions}>
+    <NavigationContainer
+      theme={navTheme}
+    >
+      <Stack.Navigator
+        initialRouteName="Welcome"
+        screenOptions={
+          screenHeaderOptions
+        }
+      >
+        <Stack.Screen
+          name="Welcome"
+          component={WelcomeScreen}
+          options={{
+            headerShown: false,
+          }}
+        />
+
         <Stack.Screen
           name="Principal"
           component={MainTabs}
-          options={{ headerShown: false }}
+          options={{
+            headerShown: false,
+          }}
         />
+
         <Stack.Screen
           name="Captura"
           component={CapturaScreen}
-          options={{ title: 'Captura' }}
+          options={{
+            title: 'Captura',
+          }}
         />
+
         <Stack.Screen
           name="Revisao"
           component={RevisaoScreen}
-          options={{ title: 'Revisão' }}
+          options={{
+            title: 'Revisão',
+          }}
         />
+
         <Stack.Screen
           name="TemplatesRevisao"
-          component={TemplatesRevisaoScreen}
-          options={{ title: 'Formulários pendentes' }}
+          component={
+            TemplatesRevisaoScreen
+          }
+          options={{
+            title: 'Formulários pendentes',
+          }}
         />
+
         <Stack.Screen
           name="GerenciarFormularios"
-          component={GerenciarFormulariosScreen}
-          options={{ title: 'Gerenciar formulários' }}
+          component={
+            GerenciarFormulariosScreen
+          }
+          options={{
+            title: 'Gerenciar formulários',
+          }}
         />
       </Stack.Navigator>
     </NavigationContainer>
