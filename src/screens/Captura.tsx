@@ -23,18 +23,9 @@ import {
   buildDynamicReportFields, buildDynamicReportItems,
   buildReportFields, buildReportItems, emptyReportItem,
 } from '../utils/reportBuilder';
+import { PURPOSE_OPTIONS } from '../constants/extractionPurpose';
 import { styles as shared } from '../styles';
 import { colors, gradients, radius, shadows, spacing } from '../theme';
-
-// Opções de finalidade mostradas na captura automática — só orientam a IA
-// (ver _AUTO_PROMPT no backend), não definem campos nem viram formulário.
-const PURPOSE_OPTIONS: Array<{ value: ExtractionPurpose; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
-  { value: 'STOCK_COUNT', label: 'Contagem de estoque', icon: 'cube-outline' },
-  { value: 'DOCUMENT_ANALYSIS', label: 'Análise de documento', icon: 'document-text-outline' },
-  { value: 'REPORT', label: 'Relatório', icon: 'alert-circle-outline' },
-  { value: 'SCENE_OBJECT_PERSON_ANALYSIS', label: 'Cenário, objeto ou pessoa', icon: 'eye-outline' },
-  { value: 'OTHER', label: 'Outros', icon: 'ellipsis-horizontal-outline' },
-];
 
 // A entrada principal é sempre livre: foto(s), áudio e texto podem ser
 // combinados e a IA decide internamente como estruturar a informação.
@@ -335,8 +326,20 @@ export default function CapturaScreen() {
     await persistReport(resolvedTemplate, captures, flatFields, items, false);
   }
 
+  // 'Outros' só faz sentido com a instrução preenchida — sem ela a IA não
+  // tem nenhuma orientação de finalidade (equivale a não ter escolhido nada,
+  // mas de forma confusa pro usuário), então bloqueamos o envio aqui.
+  const purposeNeedsInstruction = purpose === 'OTHER' && !customInstruction.trim();
+
   async function submitStagedCapture() {
     if (!hasStaged) return;
+    if (purposeNeedsInstruction) {
+      Alert.alert(
+        'Descreva a finalidade',
+        'Você escolheu "Outros" — escreva o que você quer identificar ou extrair antes de enviar.',
+      );
+      return;
+    }
 
     const now = new Date().toISOString();
     const captures: Capture[] = [
@@ -603,7 +606,10 @@ export default function CapturaScreen() {
             )}
 
             <TouchableOpacity
-              style={[local.sendButton, isProcessing && local.recordButtonDisabled]}
+              style={[
+                local.sendButton,
+                (isProcessing || purposeNeedsInstruction) && local.recordButtonDisabled,
+              ]}
               onPress={submitStagedCapture}
               disabled={isProcessing}
               activeOpacity={0.88}

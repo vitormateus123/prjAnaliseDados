@@ -17,6 +17,7 @@ import { Report, ReportItem } from '../types/reports';
 import { DynamicFields } from '../components/DynamicFields';
 import { ItemsList } from '../components/ItemsList';
 import { parseFieldValue } from '../utils/fieldValue';
+import { purposeIcon, purposeLabel } from '../constants/extractionPurpose';
 import { colors, radius, shadows, spacing } from '../theme';
 
 function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
@@ -128,6 +129,16 @@ export function RevisaoScreen() {
         <Text style={styles.title}>Confira os dados extraídos</Text>
         <Text style={styles.subtitle}>Revise, corrija se necessário e salve o relatório.</Text>
 
+        {report.extraction_purpose && (
+          <View style={styles.purposeBadge}>
+            <Ionicons name={purposeIcon(report.extraction_purpose)} size={13} color={colors.textSecondary} />
+            <Text style={styles.purposeBadgeText} numberOfLines={2}>
+              Finalidade: {purposeLabel(report.extraction_purpose)}
+              {report.extraction_custom_instruction ? ` — "${report.extraction_custom_instruction}"` : ''}
+            </Text>
+          </View>
+        )}
+
         {extractionFailed && (
           <View style={styles.warnBanner}>
             <Ionicons name="alert-circle" size={18} color={colors.dangerStrong} />
@@ -185,6 +196,14 @@ const styles = StyleSheet.create({
   eyebrow: { fontSize: 11, fontWeight: '800', color: colors.primary, letterSpacing: 1.2 },
   title: { fontSize: 22, fontWeight: '800', color: colors.textPrimary, marginTop: 4, letterSpacing: -0.3 },
   subtitle: { fontSize: 14, color: colors.textSecondary, marginTop: 4, marginBottom: spacing.xl },
+  purposeBadge: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 6,
+    backgroundColor: colors.surface, borderRadius: radius.md,
+    borderWidth: 1, borderColor: colors.border,
+    paddingVertical: spacing.sm, paddingHorizontal: spacing.md,
+    marginBottom: spacing.lg,
+  },
+  purposeBadgeText: { flex: 1, fontSize: 12, fontWeight: '600', color: colors.textSecondary },
   warnBanner: {
     flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
     backgroundColor: colors.dangerSoft, borderRadius: radius.md,

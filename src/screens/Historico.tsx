@@ -10,6 +10,7 @@ import { fetchRemoteReports } from '../services/api/reports/ReportsService';
 import { syncReport } from '../services/sync/SyncService';
 import { NetworkError, ApiError } from '../services/api/apiClient';
 import { Report, ReportField, FieldValue } from '../types/reports';
+import { purposeLabel } from '../constants/extractionPurpose';
 import { RootStackParamList } from '../../App';
 import { colors, radius, shadows, spacing } from '../theme';
 
@@ -445,6 +446,7 @@ export default function HistoricoScreen() {
                   <Text style={local.cardDate}>
                     {formatCardDate(item.created_at, section.title)}
                     {item.captures.length > 1 ? ` · ${item.captures.length} capturas combinadas` : ''}
+                    {purposeLabel(item.extraction_purpose) ? ` · ${purposeLabel(item.extraction_purpose)}` : ''}
                   </Text>
                 </View>
                 <View style={[local.statusPill, { backgroundColor: status.bg }]}>
