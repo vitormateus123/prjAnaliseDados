@@ -13,6 +13,7 @@ import { RootStackParamList } from '../../App';
 import { KeyboardAvoidingScreen } from '../components/KeyboardAvoidingScreen';
 import { extractFields } from '../services/api/ai/ExtractionService';
 import { autoExtractCombined, StagedPhoto } from '../services/api/ai/AutoExtractionService';
+import { checkHealth } from '../services/api/apiClient';
 import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
 import { fetchFormTemplateById } from '../services/api/forms/TemplatesService';
@@ -52,6 +53,16 @@ export default function CapturaScreen() {
   const [customInstruction, setCustomInstruction] = useState('');
 
   const hasStaged = stagedPhotos.length > 0 || !!stagedAudio || stagedText.trim().length > 0;
+
+  // Acorda o backend assim que a tela abre — se o plano gratuito do Render
+  // estiver "dormindo", o cold start (30-50s) acontece enquanto a pessoa
+  // ainda está tirando a foto/gravando o áudio, em vez de durante a espera
+  // depois de tocar em "Enviar". Resultado ignorado de propósito: mesmo se
+  // essa chamada falhar/der timeout, ela já cumpriu o papel de acordar o
+  // servidor — a extração de verdade tem seu próprio timeout mais folgado.
+  useEffect(() => {
+    void checkHealth();
+  }, []);
 
   function clearStaged() {
     setStagedPhotos([]);

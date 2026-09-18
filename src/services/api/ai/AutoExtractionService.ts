@@ -15,7 +15,7 @@
 
 import * as FileSystem from 'expo-file-system/legacy';
 import { AutoExtractionResult, ExtractionPurpose } from '../../../types/reports';
-import { apiFetch } from '../apiClient';
+import { apiFetch, EXTRACTION_TIMEOUT_MS, NetworkError } from '../apiClient';
 
 interface MediaItemPayload {
   data: string; // base64
@@ -82,10 +82,28 @@ export async function autoExtractCombined(input: AutoExtractInput): Promise<Auto
       custom_instruction: input.customInstruction?.trim() || null,
     };
 
-    return await apiFetch<AutoExtractionResult>('/extract/auto', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
+    try {
+      return await apiFetch<AutoExtractionResult>(
+        '/extract/auto',
+        { method: 'POST', body: JSON.stringify(body) },
+        EXTRACTION_TIMEOUT_MS,
+      );
+    } catch (error) {
+      // O timeout mais comum aqui é o "cold start" do plano gratuito do
+      // Render: a 1ª chamada depois de um tempo ocioso acorda o servidor
+      // (que já fica processando em segundo plano) e às vezes estoura o
+      // timeout antes da resposta voltar. Uma 2ª tentativa logo em seguida
+      // já bate num servidor acordado e costuma ser rápida — em vez de
+      // devolver o erro na hora e obrigar o usuário a tocar em "tentar de
+      // novo" manualmente, tentamos essa 2ª vez automaticamente aqui.
+      if (!(error instanceof NetworkError)) throw error;
+      if (__DEV__) console.warn('[AutoExtractionService] 1ª tentativa falhou, tentando de novo:', error.message);
+      return await apiFetch<AutoExtractionResult>(
+        '/extract/auto',
+        { method: 'POST', body: JSON.stringify(body) },
+        EXTRACTION_TIMEOUT_MS,
+      );
+    }
   } catch (error) {
     return {
       ...EMPTY_RESULT_BASE,

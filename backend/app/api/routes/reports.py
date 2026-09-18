@@ -19,7 +19,7 @@ logger = logging.getLogger("reports")
 # ─── permanencia da fonte de origem (imagem/audio) ────────────────────────
 # Bucket privado ja provisionado na migration 0002. Guardamos aqui so o
 # CAMINHO do arquivo (nunca uma URL assinada, que expira) — a URL exibida
-# ao app e sempre gerada na hora da leitura, ver _resolve_capture_url.
+# ao app e sempre gerada na hora da leitura, ver _resolve_capture_urls.
 _CAPTURES_BUCKET = "captures"
 MAX_CAPTURE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB — mesmo limite do /extract/
 _SIGNED_URL_TTL_SECONDS = 6 * 60 * 60  # 6h: mais que suficiente pra uma sessao de revisao
@@ -71,21 +71,40 @@ def _upload_capture_file(report_id: str, capture_id: str, data_b64: str, mime_ty
     return path
 
 
-def _resolve_capture_url(file_url: str | None) -> str | None:
-    """Troca o caminho salvo em captures.file_url por uma URL assinada
-    valida por algumas horas — o bucket e privado (migration 0002), entao
-    nunca ha uma URL publica fixa pra guardar. O caminho em si (o que
-    persiste de verdade) nunca expira."""
+def _resolve_capture_urls(rows: list[dict]) -> dict[str, str]:
+    """Resolve, numa ÚNICA chamada ao Storage, a signed URL de todo caminho
+    de capture presente nas rows (pode ser várias captures em vários
+    relatórios — ver list_reports). Resolver uma por vez (uma chamada HTTP
+    ao Supabase por capture) é o tipo de latência que faz o app estourar
+    timeout numa tela de Histórico com vários relatórios."""
+    paths = {
+        c["file_url"]
+        for row in rows
+        for c in (row.get("captures") or [])
+        if _is_storage_path(c.get("file_url"))
+    }
+    if not paths:
+        return {}
+    try:
+        results = get_client().storage.from_(_CAPTURES_BUCKET).create_signed_urls(
+            list(paths), _SIGNED_URL_TTL_SECONDS,
+        )
+    except StorageException:
+        logger.exception("Falha ao gerar signed URLs em lote (%d caminhos).", len(paths))
+        return {}
+    return {
+        r["path"]: url
+        for r in results
+        if r.get("path") and (url := r.get("signedURL") or r.get("signedUrl"))
+    }
+
+def _display_url(file_url: str | None, url_map: dict[str, str]) -> str | None:
+    """file_url guardado pode ser um caminho de Storage (precisa virar
+    signed URL via url_map) ou já uma URL http (nada a fazer)."""
     if not _is_storage_path(file_url):
         return file_url
-    try:
-        signed = get_client().storage.from_(_CAPTURES_BUCKET).create_signed_url(
-            file_url, _SIGNED_URL_TTL_SECONDS,
-        )
-        return signed.get("signedURL") or signed.get("signedUrl")
-    except StorageException:
-        logger.exception("Falha ao gerar signed URL para %s.", file_url)
-        return None
+    return url_map.get(file_url)
+
 
 _REPORT_SELECT = (
     "*, form_templates(name), "
@@ -173,7 +192,7 @@ def _columns_to_field_value(row: dict, field_type: str) -> dict:
     return {"type": field_type, "value": row.get("value_json")}
 
 
-def _row_to_report_out(row: dict) -> ReportOut:
+def _row_to_report_out(row: dict, url_map: dict[str, str]) -> ReportOut:
     template = row.get("form_templates") or {}
 
     fields: list[ReportFieldOut] = []
@@ -218,7 +237,7 @@ def _row_to_report_out(row: dict) -> ReportOut:
             id=c["id"],
             type=c["type"],
             local_path=c.get("local_path"),
-            file_url=_resolve_capture_url(c.get("file_url")),
+            file_url=_display_url(c.get("file_url"), url_map),
             mime_type=c.get("mime_type"),
             created_at=c["created_at"],
             text_content=c.get("text_content"),
@@ -395,7 +414,9 @@ def list_reports(limit: int = 100):
         .limit(limit)
         .execute()
     )
-    return [_row_to_report_out(row) for row in (resp.data or [])]
+    rows = resp.data or []
+    url_map = _resolve_capture_urls(rows)
+    return [_row_to_report_out(row, url_map) for row in rows]
 
 
 @router.get("/{report_id}", response_model=ReportOut)
@@ -410,4 +431,5 @@ def get_report(report_id: str):
     rows = resp.data or []
     if not rows:
         raise HTTPException(status_code=404, detail="Relatorio nao encontrado.")
-    return _row_to_report_out(rows[0])
+    url_map = _resolve_capture_urls(rows)
+    return _row_to_report_out(rows[0], url_map)

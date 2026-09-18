@@ -4,9 +4,12 @@
 // "o que está no banco de verdade" — usado pelo Histórico para mesclar
 // com os rascunhos locais que ainda não foram sincronizados.
 
-import { apiFetch } from '../apiClient';
+import { apiFetch, UPLOAD_TIMEOUT_MS } from '../apiClient';
 import { Report } from '../../../types/reports';
 
 export async function fetchRemoteReports(): Promise<Report[]> {
-  return apiFetch<Report[]>('/reports/');
+  // Timeout maior que o padrão: além do cold start do Render, esta rota
+  // agora gera uma signed URL por capture com arquivo salvo (uma chamada
+  // extra ao Storage por captura) pra permitir exibir a fonte de origem.
+  return apiFetch<Report[]>('/reports/', undefined, UPLOAD_TIMEOUT_MS);
 }

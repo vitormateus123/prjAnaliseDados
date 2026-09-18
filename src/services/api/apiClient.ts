@@ -34,6 +34,11 @@ const DEFAULT_TIMEOUT_MS = 15000;
 // chamada) e 15s corta a requisição bem no meio disso. Upload usa um
 // timeout mais folgado por causa disso.
 export const UPLOAD_TIMEOUT_MS = 60000;
+// /extract/auto encadeia Groq (STT, se houver áudio) + Gemini (classificação
+// e extração, geradas numa única chamada) — pode passar de 20-30s mesmo com
+// o servidor já acordado. Somado ao cold start acima, 15s (nem os 60s do
+// upload) dão conta com folga — por isso um timeout dedicado, maior.
+export const EXTRACTION_TIMEOUT_MS = 90000;
 
 /** Servidor respondeu, mas com status de erro. */
 export class ApiError extends Error {
