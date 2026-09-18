@@ -50,9 +50,17 @@ export interface Capture {
   id: string;
   type: CaptureType;
   local_path?: string;        // caminho local (offline)
-  file_url?: string;          // URL remota (após sync)
+  file_url?: string;          // URL remota (após sync) — assinada, temporária, só pra exibir
   mime_type?: string;
   created_at: string;
+  // Texto digitado (captures do tipo 'text') — persistido de verdade
+  // desde a criação da capture, não só usado na hora da extração.
+  text_content?: string;
+  // Conteúdo do arquivo em base64, só usado para montar o payload de um
+  // POST /reports/ (ver SyncService.attachCaptureData) — nunca gravado no
+  // AsyncStorage local nem exibido; existe só de passagem até o backend
+  // fazer upload e persistir a mídia de verdade no Storage.
+  data?: string;
 }
 
 export interface ExtractionResult {

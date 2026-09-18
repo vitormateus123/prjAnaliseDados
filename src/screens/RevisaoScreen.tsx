@@ -16,6 +16,7 @@ import { StorageService } from '../storage/StorageService';
 import { Report, ReportItem } from '../types/reports';
 import { DynamicFields } from '../components/DynamicFields';
 import { ItemsList } from '../components/ItemsList';
+import { CaptureOriginCard } from '../components/CaptureOriginCard';
 import { parseFieldValue } from '../utils/fieldValue';
 import { purposeIcon, purposeLabel } from '../constants/extractionPurpose';
 import { colors, radius, shadows, spacing } from '../theme';
@@ -147,6 +148,8 @@ export function RevisaoScreen() {
             </Text>
           </View>
         )}
+
+        <CaptureOriginCard captures={report.captures} />
 
         <View style={styles.card}>
           <DynamicFields

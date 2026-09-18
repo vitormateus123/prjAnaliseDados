@@ -25,6 +25,15 @@ class CaptureIn(BaseModel):
     file_url: Optional[str] = None
     mime_type: Optional[str] = None
     created_at: str
+    # Texto digitado (captures do tipo 'text') — persistido direto, sem
+    # upload. Ver migration 0010.
+    text_content: Optional[str] = None
+    # Conteudo do arquivo (foto/audio) em base64 — so viaja nesta requisicao
+    # (o app le o arquivo local antes de sincronizar); nunca fica salvo em
+    # texto puro em lugar nenhum. Presente => o backend faz upload pro
+    # Storage e troca file_url pelo caminho salvo la. Ausente numa capture
+    # que ja tem file_url => ja foi enviada antes, nao reenviar.
+    data: Optional[str] = None
 
 
 class ReportItemIn(BaseModel):
@@ -67,9 +76,13 @@ class CaptureOut(BaseModel):
     id: str
     type: str
     local_path: Optional[str] = None
+    # URL assinada e temporaria, gerada na leitura a partir do caminho
+    # guardado no Storage (ver _resolve_capture_url em reports.py) — o app
+    # nunca deve persistir este valor como definitivo, so exibir.
     file_url: Optional[str] = None
     mime_type: Optional[str] = None
     created_at: str
+    text_content: Optional[str] = None
 
 
 class ReportItemOut(BaseModel):
@@ -94,6 +107,15 @@ class ReportOut(BaseModel):
     synced_at: Optional[str] = None
 
 
+class SyncedCaptureRef(BaseModel):
+    """Referencia enxuta devolvida apos o sync, so pra o app marcar quais
+    captures ja tem arquivo persistido no Storage e nao precisar reenviar
+    o base64 delas numa proxima tentativa (retry apos erro de rede, etc.)."""
+    id: str
+    file_url: Optional[str] = None
+
+
 class ReportSyncResult(BaseModel):
     success: bool
     id: str
+    captures: list[SyncedCaptureRef] = []

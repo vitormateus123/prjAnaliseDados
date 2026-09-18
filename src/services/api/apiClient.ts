@@ -33,7 +33,7 @@ const DEFAULT_TIMEOUT_MS = 15000;
 // dorme depois de ficar parado e pode levar 30-50s pra acordar na próxima
 // chamada) e 15s corta a requisição bem no meio disso. Upload usa um
 // timeout mais folgado por causa disso.
-const UPLOAD_TIMEOUT_MS = 60000;
+export const UPLOAD_TIMEOUT_MS = 60000;
 
 /** Servidor respondeu, mas com status de erro. */
 export class ApiError extends Error {
@@ -100,11 +100,16 @@ async function parseError(response: Response): Promise<never> {
   throw new ApiError(response.status, message || `Erro ${response.status}`);
 }
 
-export async function apiFetch<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await request(`${BASE_URL}${path}`, {
-    ...options,
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-  });
+export async function apiFetch<T>(
+  path: string,
+  options?: RequestInit,
+  timeoutMs: number = DEFAULT_TIMEOUT_MS,
+): Promise<T> {
+  const response = await request(
+    `${BASE_URL}${path}`,
+    { ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } },
+    timeoutMs,
+  );
 
   if (!response.ok) await parseError(response);
   return response.json() as Promise<T>;

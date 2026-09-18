@@ -1,16 +1,91 @@
 # backend/app/api/routes/reports.py
+import base64
+import binascii
 import logging
 import uuid as uuid_lib
 from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from postgrest.exceptions import APIError as PostgrestAPIError
+from storage3.utils import StorageException
 from app.services.supabase_service import get_client
 from app.schemas.reports import (
-    ReportIn, ReportOut, ReportFieldOut, CaptureOut, ReportItemOut, ReportSyncResult,
+    ReportIn, ReportOut, ReportFieldOut, CaptureOut, ReportItemOut,
+    ReportSyncResult, SyncedCaptureRef,
 )
 
 router = APIRouter()
 logger = logging.getLogger("reports")
+
+# ─── permanencia da fonte de origem (imagem/audio) ────────────────────────
+# Bucket privado ja provisionado na migration 0002. Guardamos aqui so o
+# CAMINHO do arquivo (nunca uma URL assinada, que expira) — a URL exibida
+# ao app e sempre gerada na hora da leitura, ver _resolve_capture_url.
+_CAPTURES_BUCKET = "captures"
+MAX_CAPTURE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB — mesmo limite do /extract/
+_SIGNED_URL_TTL_SECONDS = 6 * 60 * 60  # 6h: mais que suficiente pra uma sessao de revisao
+
+_MIME_EXTENSIONS = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "audio/m4a": "m4a",
+    "audio/mpeg": "mp3",
+    "audio/wav": "wav",
+}
+
+
+def _capture_extension(mime_type: str | None) -> str:
+    return _MIME_EXTENSIONS.get(mime_type or "", "bin")
+
+
+def _is_storage_path(file_url: str | None) -> bool:
+    """Distingue um caminho de Storage (o que gravamos) de uma URL http
+    completa (formato antigo/externo, se algum dia existir) — so a primeira
+    precisa virar signed URL na leitura."""
+    return bool(file_url) and not file_url.startswith("http")
+
+
+def _upload_capture_file(report_id: str, capture_id: str, data_b64: str, mime_type: str | None) -> str | None:
+    """Decodifica o base64 recebido do app e sobe pro Storage. Devolve o
+    caminho salvo (pra gravar em captures.file_url) ou None se a captura
+    veio invalida/grande demais — nesse caso a captura fica sem arquivo,
+    mas o resto do relatorio continua sendo salvo normalmente (a foto/audio
+    e um bonus de auditoria, nao o dado principal do relatorio)."""
+    try:
+        raw = base64.b64decode(data_b64, validate=True)
+    except (binascii.Error, ValueError):
+        logger.warning("Capture %s: base64 invalido, ignorando upload.", capture_id)
+        return None
+    if len(raw) > MAX_CAPTURE_FILE_SIZE:
+        logger.warning("Capture %s: arquivo maior que %d bytes, ignorando upload.", capture_id, MAX_CAPTURE_FILE_SIZE)
+        return None
+
+    path = f"{report_id}/{capture_id}.{_capture_extension(mime_type)}"
+    try:
+        get_client().storage.from_(_CAPTURES_BUCKET).upload(
+            path, raw,
+            file_options={"content-type": mime_type or "application/octet-stream", "upsert": "true"},
+        )
+    except StorageException:
+        logger.exception("Falha ao subir capture %s pro Storage.", capture_id)
+        return None
+    return path
+
+
+def _resolve_capture_url(file_url: str | None) -> str | None:
+    """Troca o caminho salvo em captures.file_url por uma URL assinada
+    valida por algumas horas — o bucket e privado (migration 0002), entao
+    nunca ha uma URL publica fixa pra guardar. O caminho em si (o que
+    persiste de verdade) nunca expira."""
+    if not _is_storage_path(file_url):
+        return file_url
+    try:
+        signed = get_client().storage.from_(_CAPTURES_BUCKET).create_signed_url(
+            file_url, _SIGNED_URL_TTL_SECONDS,
+        )
+        return signed.get("signedURL") or signed.get("signedUrl")
+    except StorageException:
+        logger.exception("Falha ao gerar signed URL para %s.", file_url)
+        return None
 
 _REPORT_SELECT = (
     "*, form_templates(name), "
@@ -143,9 +218,10 @@ def _row_to_report_out(row: dict) -> ReportOut:
             id=c["id"],
             type=c["type"],
             local_path=c.get("local_path"),
-            file_url=c.get("file_url"),
+            file_url=_resolve_capture_url(c.get("file_url")),
             mime_type=c.get("mime_type"),
             created_at=c["created_at"],
+            text_content=c.get("text_content"),
         )
         for c in row.get("captures") or []
     ]
@@ -275,18 +351,30 @@ def create_report(report: ReportIn):
             if item_field_rows:
                 supabase.table("report_item_fields").insert(item_field_rows).execute()
 
+        synced_captures: list[SyncedCaptureRef] = []
         if report.captures:
-            capture_rows = [
-                {
+            capture_rows = []
+            for c in report.captures:
+                # 'data' so viaja nesta requisicao — se veio preenchido, faz
+                # upload agora e troca file_url pelo caminho salvo no
+                # Storage (permanencia real da imagem/audio). Se nao veio
+                # (capture ja enviada num sync anterior), mantem o file_url
+                # que o app mandou (o caminho ja salvo antes).
+                file_url = c.file_url
+                if c.data:
+                    uploaded_path = _upload_capture_file(report.id, c.id, c.data, c.mime_type)
+                    if uploaded_path:
+                        file_url = uploaded_path
+                capture_rows.append({
                     "id": c.id,
                     "report_id": report.id,
                     "type": c.type,
                     "local_path": c.local_path,
-                    "file_url": c.file_url,
+                    "file_url": file_url,
                     "mime_type": c.mime_type,
-                }
-                for c in report.captures
-            ]
+                    "text_content": c.text_content,
+                })
+                synced_captures.append(SyncedCaptureRef(id=c.id, file_url=file_url))
             supabase.table("captures").upsert(capture_rows, on_conflict="id").execute()
     except PostgrestAPIError as e:
         raise HTTPException(
@@ -294,7 +382,7 @@ def create_report(report: ReportIn):
             detail=f"Erro ao gravar no banco: {e.message}",
         )
 
-    return ReportSyncResult(success=True, id=report.id)
+    return ReportSyncResult(success=True, id=report.id, captures=synced_captures)
 
 
 @router.get("/", response_model=list[ReportOut])

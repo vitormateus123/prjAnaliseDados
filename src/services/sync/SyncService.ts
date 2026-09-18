@@ -1,9 +1,39 @@
 // src/services/sync/SyncService.ts
 import { AppState, AppStateStatus } from 'react-native';
 import NetInfo from '@react-native-community/netinfo';
+import * as FileSystem from 'expo-file-system/legacy';
 import { StorageService } from '../../storage/StorageService';
-import { apiFetch, NetworkError } from '../api/apiClient';
-import { Report } from '../../types/reports';
+import { apiFetch, NetworkError, UPLOAD_TIMEOUT_MS } from '../api/apiClient';
+import { Capture, Report } from '../../types/reports';
+
+// Tipos de capture cujo arquivo local precisa ser lido e enviado pro
+// backend fazer upload pro Storage — permanência real da fonte de origem
+// (ver POST /reports/). Texto já vai por texto mesmo (text_content), sem
+// leitura de arquivo.
+const UPLOADABLE_TYPES = new Set<Capture['type']>(['photo', 'voice']);
+
+/**
+ * Lê o arquivo local (base64) de cada capture de foto/áudio que ainda não
+ * tem file_url e anexa como `data` no payload — só nesta requisição, nunca
+ * persistido no AsyncStorage (ver StorageService, que continua guardando
+ * só local_path). Se o arquivo local não existir mais (cache do sistema
+ * limpo, app reinstalado etc.), a capture é enviada sem `data`: o resto do
+ * relatório sincroniza normalmente, só sem a mídia de origem dela.
+ */
+async function attachCaptureData(captures: Capture[]): Promise<Capture[]> {
+  return Promise.all(
+    captures.map(async (c) => {
+      if (c.file_url || !UPLOADABLE_TYPES.has(c.type) || !c.local_path) return c;
+      try {
+        const data = await FileSystem.readAsStringAsync(c.local_path, { encoding: 'base64' });
+        return { ...c, data };
+      } catch (err) {
+        if (__DEV__) console.warn('[SyncService] não foi possível ler capture local', c.id, err);
+        return c;
+      }
+    }),
+  );
+}
 
 /**
  * IMPORTANTE: não usamos mais NetInfo.isConnected() como portão antes de
@@ -18,10 +48,12 @@ import { Report } from '../../types/reports';
  */
 async function syncOne(report: Report): Promise<boolean> {
   try {
-    await apiFetch('/reports/', {
-      method: 'POST',
-      body: JSON.stringify(report),
-    });
+    const payload = { ...report, captures: await attachCaptureData(report.captures) };
+    await apiFetch(
+      '/reports/',
+      { method: 'POST', body: JSON.stringify(payload) },
+      UPLOAD_TIMEOUT_MS, // payload pode incluir fotos/áudio em base64 — igual ao timeout de upload
+    );
     await StorageService.upsertReport({
       ...report,
       status: 'synced',

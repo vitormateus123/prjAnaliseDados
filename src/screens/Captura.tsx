@@ -7,7 +7,6 @@ import { useNavigation, useRoute, NavigationProp, RouteProp } from '@react-navig
 import * as ImagePicker from 'expo-image-picker';
 import NetInfo from '@react-native-community/netinfo';
 import * as Crypto from 'expo-crypto';
-import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
 import { RootStackParamList } from '../../App';
@@ -25,7 +24,7 @@ import {
 } from '../utils/reportBuilder';
 import { PURPOSE_OPTIONS } from '../constants/extractionPurpose';
 import { styles as shared } from '../styles';
-import { colors, gradients, radius, shadows, spacing } from '../theme';
+import { colors, radius, shadows, spacing } from '../theme';
 
 // A entrada principal é sempre livre: foto(s), áudio e texto podem ser
 // combinados e a IA decide internamente como estruturar a informação.
@@ -352,6 +351,7 @@ export default function CapturaScreen() {
       }] : []),
       ...(stagedText.trim() ? [{
         id: Crypto.randomUUID(), type: 'text' as const, mime_type: 'text/plain', created_at: now,
+        text_content: stagedText.trim(),
       }] : []),
     ];
 
@@ -509,7 +509,12 @@ export default function CapturaScreen() {
   return (
     <SafeAreaView style={local.safe}>
       <KeyboardAvoidingScreen>
-      <View style={local.content}>
+      <ScrollView
+        style={local.scroll}
+        contentContainerStyle={local.content}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         <View style={local.header}>
           <Text style={local.eyebrow}>{isAutoMode ? 'Captura inteligente' : template!.name.toUpperCase()}</Text>
           <Text style={shared.title}>{isAutoMode ? 'Nova captura' : template!.name}</Text>
@@ -627,73 +632,70 @@ export default function CapturaScreen() {
         )}
 
         {!textMode && (
-          <>
-            <View style={local.stage}>
-              <Animated.View
-                pointerEvents="none"
-                style={[
-                  local.pulseRing,
-                  { transform: [{ scale: pulseScale }], opacity: pulseOpacity },
-                ]}
-              />
-              <TouchableOpacity
-                onPress={handleToggleRecording}
-                disabled={isProcessing}
-                activeOpacity={0.85}
-                style={local.recordTouchable}
-              >
-                <LinearGradient
-                  colors={recording ? ['#f87171', '#dc2626'] : gradients.primaryHero}
-                  start={{ x: 0.1, y: 0 }}
-                  end={{ x: 0.9, y: 1 }}
-                  style={[local.recordButton, isProcessing && local.recordButtonDisabled]}
-                >
+          <View style={local.actionsRow}>
+            <TouchableOpacity
+              onPress={handleToggleRecording}
+              disabled={isProcessing}
+              activeOpacity={0.85}
+              style={[local.actionButton, isProcessing && local.actionButtonDisabled]}
+            >
+              <View style={local.actionIconStage}>
+                <Animated.View
+                  pointerEvents="none"
+                  style={[
+                    local.pulseRing,
+                    { transform: [{ scale: pulseScale }], opacity: pulseOpacity },
+                  ]}
+                />
+                <View style={[local.actionIconWrap, recording && local.actionIconWrapActive]}>
                   {isProcessing ? (
-                    <ActivityIndicator size="large" color={colors.textOnPrimary} />
+                    <ActivityIndicator size="small" color={recording ? colors.textOnPrimary : colors.primary} />
                   ) : (
-                    <Ionicons name={recording ? 'stop' : 'mic'} size={44} color={colors.textOnPrimary} />
+                    <Ionicons
+                      name={recording ? 'stop' : 'mic'}
+                      size={22}
+                      color={recording ? colors.textOnPrimary : colors.primary}
+                    />
                   )}
-                </LinearGradient>
-              </TouchableOpacity>
-              <Text style={local.stageLabel}>
-                {isProcessing
-                  ? 'Processando...'
-                  : recording
-                  ? 'Toque para parar'
-                  : stagedAudio
-                  ? 'Toque para regravar'
-                  : 'Toque para gravar'}
+                </View>
+              </View>
+              <Text style={local.actionButtonText} numberOfLines={1}>
+                {recording ? 'Parar' : stagedAudio ? 'Regravar' : 'Gravar'}
               </Text>
-            </View>
+            </TouchableOpacity>
 
             <TouchableOpacity
-              style={local.photoButton}
+              style={[local.actionButton, (isProcessing || recording) && local.actionButtonDisabled]}
               onPress={handlePhotoCapture}
               disabled={isProcessing || recording}
               activeOpacity={0.85}
             >
-              <View style={local.photoIconWrap}>
-                <Ionicons name="camera" size={20} color={colors.primary} />
+              <View style={local.actionIconStage}>
+                <View style={local.actionIconWrap}>
+                  <Ionicons name="camera" size={22} color={colors.primary} />
+                </View>
               </View>
-              <Text style={local.photoButtonText}>
-                {isProcessing ? 'Processando...' : stagedPhotos.length > 0 ? 'Adicionar mais uma foto' : 'Adicionar foto'}
+              <Text style={local.actionButtonText} numberOfLines={1}>
+                {stagedPhotos.length > 0 ? 'Mais foto' : 'Foto'}
               </Text>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
             </TouchableOpacity>
 
             <TouchableOpacity
-              style={[local.photoButton, local.photoButtonSpaced]}
+              style={[local.actionButton, (isProcessing || recording) && local.actionButtonDisabled]}
               onPress={() => { setTextValue(stagedText); setTextMode(true); }}
               disabled={isProcessing || recording}
               activeOpacity={0.85}
             >
-              <View style={local.photoIconWrap}>
-                <Ionicons name="create-outline" size={20} color={colors.primary} />
+              <View style={local.actionIconStage}>
+                <View style={local.actionIconWrap}>
+                  <Ionicons name="create-outline" size={22} color={colors.primary} />
+                </View>
               </View>
-              <Text style={local.photoButtonText}>{stagedText.trim() ? 'Editar texto' : 'Escrever'}</Text>
-              <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+              <Text style={local.actionButtonText} numberOfLines={1}>
+                {stagedText.trim() ? 'Editar texto' : 'Escrever'}
+              </Text>
             </TouchableOpacity>
-          </>
+          </View>
         )}
 
         {textMode && (
@@ -745,7 +747,7 @@ export default function CapturaScreen() {
           </View>
         )}
 
-      </View>
+      </ScrollView>
       </KeyboardAvoidingScreen>
     </SafeAreaView>
   );
@@ -753,45 +755,37 @@ export default function CapturaScreen() {
 
 const local = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
-  content: { flex: 1, padding: spacing.xxl, justifyContent: 'center' },
+  scroll: { flex: 1 },
+  content: { flexGrow: 1, padding: spacing.xxl, justifyContent: 'center' },
   header: { marginBottom: spacing.xxl },
   eyebrow: {
     fontSize: 12, fontWeight: '800', color: colors.primary,
     letterSpacing: 1.2, textTransform: 'uppercase', marginBottom: 6,
   },
-  stage: { alignItems: 'center', justifyContent: 'center', marginBottom: spacing.xxxl },
-  recordTouchable: { alignItems: 'center', justifyContent: 'center' },
-  pulseRing: {
-    position: 'absolute',
-    width: 168, height: 168, borderRadius: 84,
-    backgroundColor: colors.primary,
-  },
-  recordButton: {
-    width: 168, height: 168, borderRadius: 84,
-    alignItems: 'center', justifyContent: 'center',
-    ...shadows.lg,
-  },
-  recordButtonDisabled: { opacity: 0.75 },
-  stageLabel: {
-    marginTop: spacing.lg,
-    fontSize: 14, fontWeight: '700', color: colors.textSecondary,
-  },
-  photoButton: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
+  actionsRow: { flexDirection: 'row', gap: spacing.md, marginBottom: spacing.xxxl },
+  actionButton: {
+    flex: 1, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: colors.surface, borderRadius: radius.lg,
     borderWidth: 1.5, borderColor: colors.border,
-    paddingVertical: spacing.lg, paddingHorizontal: spacing.xl,
+    paddingVertical: spacing.lg, paddingHorizontal: spacing.xs,
+    minHeight: 104,
     ...shadows.sm,
   },
-  photoIconWrap: {
-    width: 38, height: 38, borderRadius: radius.md,
+  actionButtonDisabled: { opacity: 0.55 },
+  actionIconStage: { alignItems: 'center', justifyContent: 'center', marginBottom: spacing.sm },
+  pulseRing: {
+    position: 'absolute',
+    width: 52, height: 52, borderRadius: 26,
+    backgroundColor: colors.dangerStrong,
+  },
+  actionIconWrap: {
+    width: 52, height: 52, borderRadius: 26,
     backgroundColor: colors.primaryLight,
     alignItems: 'center', justifyContent: 'center',
-    marginRight: spacing.md,
   },
-  photoButtonText: { flex: 1, fontSize: 15, fontWeight: '700', color: colors.textPrimary },
-  photoButtonSpaced: { marginTop: spacing.md },
+  actionIconWrapActive: { backgroundColor: colors.dangerStrong },
+  actionButtonText: { fontSize: 12, fontWeight: '700', color: colors.textPrimary, textAlign: 'center' },
+  recordButtonDisabled: { opacity: 0.75 },
   textBox: { marginBottom: spacing.md },
   textBoxLabel: {
     fontSize: 13, fontWeight: '700', color: colors.textSecondary, marginBottom: spacing.sm,
