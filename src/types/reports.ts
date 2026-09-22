@@ -44,6 +44,11 @@ export interface ReportField {
   was_edited: boolean;
   input_source?: InputSource | null;
   dynamic_type?: FieldType;
+  // Dica original usada pela IA para localizar este campo (copiada de
+  // FormField.extraction_hint no momento da extração). Guardada aqui para
+  // que o refinamento (regenerar campo) reutilize a mesma instrução em vez
+  // de cair no label, que costuma ser mais vago — ver RevisaoScreen.tsx.
+  extraction_hint?: string | null;
 }
 
 export interface Capture {

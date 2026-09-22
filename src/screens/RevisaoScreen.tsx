@@ -181,7 +181,9 @@ export function RevisaoScreen() {
       key: field.key,
       label: field.label,
       type: field.dynamic_type ?? field.field_value.type,
-      extraction_hint: field.label,
+      // Reusa a dica original do template (se existir); cai no label só
+      // quando o campo nunca teve extraction_hint (ex: dinâmico ou manual).
+      extraction_hint: field.extraction_hint ?? field.label,
     };
 
     setRegeneratingKey(field.key);

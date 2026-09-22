@@ -31,6 +31,7 @@ export function buildReportFields(
         source: 'ai',
         was_edited: false,
         input_source: found.source ?? null,
+        extraction_hint: field.extraction_hint ?? null,
       };
     }
     return {
@@ -40,6 +41,7 @@ export function buildReportFields(
       field_value: emptyFieldValue(field.type),
       source: 'manual',
       was_edited: false,
+      extraction_hint: field.extraction_hint ?? null,
     };
   });
 }
