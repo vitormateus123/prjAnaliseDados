@@ -28,6 +28,10 @@ yarn-error.*
 
 # macOS
 .DS_Store
+
+# Python (backend)
+__pycache__/
+*.pyc
 *.pem
 
 # local env files

@@ -209,3 +209,28 @@ class RefineResponse(BaseModel):
     model: str
     error: str | None = None
     retryable: bool = False
+
+
+# ─── resumo do relatório (frase curta pro card do Histórico) ──────────────
+# Usado pelo endpoint POST /extract/summarize — o app manda os campos JÁ
+# EXTRAÍDOS (texto, sem mídia) depois de uma captura ou edição, e a IA
+# devolve uma frase curta que identifica o relatório de relance (ver
+# SummaryService.ts no app). Best-effort: erro aqui nunca deve travar o
+# fluxo de captura/revisão, por isso a resposta sempre success=False em vez
+# de HTTP error quando algo falha.
+
+class SummarizeField(BaseModel):
+    label: str
+    value: str
+
+
+class SummarizeRequest(BaseModel):
+    context_label: str | None = None
+    purpose: str | None = None
+    fields: list[SummarizeField]
+
+
+class SummarizeResponse(BaseModel):
+    success: bool
+    summary: str | None = None
+    error: str | None = None

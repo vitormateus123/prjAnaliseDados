@@ -458,14 +458,21 @@ export default function HistoricoScreen() {
               </View>
 
               {/*
-                A descrição (campos extraídos) ficava espremida ao lado do
-                ícone + selo de status, sobrando pouquíssima largura pra
-                texto — por isso mostrava só 1-2 palavras. Agora ocupa a
-                largura inteira do card, numa linha por campo (como uma
-                mini lista de definição), o que dá espaço de sobra pra ler
-                o valor completo sem abrir o relatório.
+                Quando a IA já gerou um resumo (ai_summary — ver
+                SummaryService.ts), ele é o que vai no card: uma frase só,
+                em linguagem natural, em vez de uma lista de campo/valor que
+                cresce e fica espremida quando o relatório tem muitos campos
+                mas nenhum deles sozinho identifica do que se trata. Sem
+                resumo (falhou ao gerar, captura antiga, ou nenhum campo
+                ainda preenchido), volta pro comportamento anterior: lista
+                até 3 campos, um por linha, ocupando a largura inteira do
+                card pra caber o valor completo sem abrir o relatório.
               */}
-              {entries.length > 0 ? (
+              {item.ai_summary ? (
+                <Text style={local.cardSummaryText} numberOfLines={2}>
+                  {item.ai_summary}
+                </Text>
+              ) : entries.length > 0 ? (
                 <View style={local.cardSummaryList}>
                   {entries.map((entry, idx) => (
                     <Text
@@ -623,6 +630,10 @@ const local = StyleSheet.create({
   // palavras apareciam); agora ocupa a largura inteira do card, uma linha
   // por campo — como uma mini lista de definição, com o rótulo em negrito
   // ancorando o valor ao que ele representa.
+  cardSummaryText: {
+    fontSize: 14, lineHeight: 19, marginTop: spacing.sm,
+    color: colors.textSecondary, fontWeight: '500',
+  },
   cardSummaryList: { marginTop: spacing.sm, gap: 3 },
   cardSummaryRow: { fontSize: 14, lineHeight: 19 },
   cardSummaryLabel: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },

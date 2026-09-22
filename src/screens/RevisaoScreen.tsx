@@ -43,6 +43,12 @@ export function RevisaoScreen() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
+  // Snapshot dos campos/itens tal como carregados, pra saber em handleSave
+  // se algo mudou desde então — só vale a pena chamar a IA de novo pro
+  // resumo (summarizeReport) quando o conteúdo realmente mudou; caso
+  // contrário o ai_summary gerado na captura continua válido.
+  const initialFieldsSnapshot = React.useRef<string | null>(null);
+
   // ─── estado de refinamento ────────────────────────────────────────────────
   // regeneratingKey: key do campo sendo refinado individualmente (null = nenhum)
   // isRefiningAll: "Regenerar tudo" em andamento
@@ -57,6 +63,9 @@ export function RevisaoScreen() {
   useEffect(() => {
     StorageService.getReportById(reportId).then((found) => {
       setReport(found);
+      if (found) {
+        initialFieldsSnapshot.current = JSON.stringify({ fields: found.fields, items: found.items });
+      }
       setLoading(false);
     });
   }, [reportId]);
@@ -343,6 +352,17 @@ export function RevisaoScreen() {
         status: report.status === 'synced' ? 'synced' : 'pending_sync',
         updated_at: new Date().toISOString(),
       };
+
+      // Campos/itens mudaram desde que a tela abriu (edição manual,
+      // regeneração de campo, item adicionado/removido etc.) → o
+      // ai_summary gerado na captura pode não refletir mais o conteúdo.
+      // Best-effort: se falhar, mantém o resumo anterior em vez de apagar.
+      const currentSnapshot = JSON.stringify({ fields: updated.fields, items: updated.items });
+      if (currentSnapshot !== initialFieldsSnapshot.current) {
+        const newSummary = await summarizeReport(updated);
+        if (newSummary) updated.ai_summary = newSummary;
+      }
+
       await StorageService.upsertReport(updated);
       navigation.navigate('Principal', { screen: 'Histórico' });
     } catch {

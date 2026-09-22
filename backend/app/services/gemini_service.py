@@ -3,7 +3,7 @@ import json
 from google import genai
 from google.genai import types
 from app.core.config import settings
-from app.schemas.extraction import ExtractedField, FieldHint
+from app.schemas.extraction import ExtractedField, FieldHint, SummarizeField
 from app.schemas.discovery import DiscoveredField, DiscoveryResult
 
 _client = genai.Client(api_key=settings.gemini_api_key)
@@ -191,6 +191,69 @@ JSON esperado:
   ]
 }}
 """
+
+# ─── RESUMO DO RELATÓRIO (frase curta pro card do Histórico) ───────────────
+
+_SUMMARY_PROMPT = """Você recebe os campos já extraídos de um relatório de campo e deve gerar \
+UMA frase curta (máx. ~12 palavras) que descreva do que se trata, pra alguém \
+reconhecer o relatório numa lista sem precisar abrir e ler campo por campo.
+
+{context_block}CAMPOS EXTRAÍDOS:
+{fields_spec}
+
+REGRAS:
+- Frase única, direta, sem pontuação final.
+- Não repita o rótulo dos campos (ex: não escreva "Local: Depósito A"); \
+descreva o conteúdo em linguagem natural (ex: "Contagem de estoque no Depósito A").
+- Não invente informações que não estão nos campos.
+- Retorne APENAS o JSON pedido, sem texto adicional.
+
+Retorne um JSON com esta estrutura exata:
+{{"summary": "frase gerada"}}
+"""
+
+_SUMMARY_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "summary": {"type": "STRING"},
+    },
+    "required": ["summary"],
+}
+
+
+def _summary_config() -> types.GenerateContentConfig:
+    return types.GenerateContentConfig(
+        response_mime_type="application/json",
+        response_schema=_SUMMARY_RESPONSE_SCHEMA,
+    )
+
+
+async def summarize_report(
+    fields: list[SummarizeField],
+    context_label: str | None,
+    purpose: str | None,
+) -> str:
+    """Gera uma frase curta descrevendo o relatório a partir dos campos JÁ
+    EXTRAÍDOS (texto puro, sem mídia) — usada no card do Histórico no lugar
+    de listar campo por campo. Ver POST /extract/summarize."""
+    fields_spec = "\n".join(f"- {f.label}: {f.value}" for f in fields)
+    context_block = ""
+    if context_label:
+        context_block = f"CONTEXTO/TIPO: {context_label}\n"
+    if purpose:
+        context_block += f"FINALIDADE: {purpose}\n"
+
+    prompt = _SUMMARY_PROMPT.format(context_block=context_block, fields_spec=fields_spec)
+
+    response = await _client.aio.models.generate_content(
+        model=_MODEL,
+        contents=prompt,
+        config=_summary_config(),
+    )
+
+    data = json.loads(response.text)
+    return data["summary"].strip()
+
 
 _DISCOVERY_RESPONSE_SCHEMA = {
     "type": "OBJECT",
