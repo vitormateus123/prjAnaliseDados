@@ -1,6 +1,4 @@
 // src/screens/RevisaoScreen.tsx
-// Migrada para os tipos novos (src/types/reports.ts) e para o StorageService.
-
 import React, { useState, useEffect } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
@@ -13,17 +11,17 @@ import * as Haptics from 'expo-haptics';
 import { RootStackParamList } from '../../App';
 import { KeyboardAvoidingScreen } from '../components/KeyboardAvoidingScreen';
 import { StorageService } from '../storage/StorageService';
-import { Report, ReportItem } from '../types/reports';
+import { Report, ReportField, ReportItem } from '../types/reports';
 import { DynamicFields } from '../components/DynamicFields';
 import { ItemsList } from '../components/ItemsList';
 import { CaptureOriginCard } from '../components/CaptureOriginCard';
 import { parseFieldValue } from '../utils/fieldValue';
 import { purposeIcon, purposeLabel } from '../constants/extractionPurpose';
+import { refineFields, toRefineTargetFields, RefineTargetField } from '../services/api/ai/RefineService';
 import { colors, radius, shadows, spacing } from '../theme';
 
 function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
   if (!visible) return null;
-
   return (
     <View style={styles.loadingOverlay}>
       <ActivityIndicator size="large" color={colors.success} />
@@ -43,6 +41,15 @@ export function RevisaoScreen() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  // ─── estado de refinamento ────────────────────────────────────────────────
+  // regeneratingKey: key do campo sendo refinado individualmente (null = nenhum)
+  // isRefiningAll: "Regenerar tudo" em andamento
+  const [regeneratingKey, setRegeneratingKey] = useState<string | null>(null);
+  const [isRefiningAll, setIsRefiningAll] = useState(false);
+  const isRefining = !!regeneratingKey || isRefiningAll;
+
+  // ─── estado do formulário de adicionar campo ──────────────────────────────
   const [newFieldLabel, setNewFieldLabel] = useState('');
   const [newFieldValue, setNewFieldValue] = useState('');
 
@@ -54,6 +61,8 @@ export function RevisaoScreen() {
   }, [reportId]);
 
   if (loading || !report) return <LoadingOverlay visible message="Carregando..." />;
+
+  // ─── handlers de edição ───────────────────────────────────────────────────
 
   function handleChange(key: string, rawValue: string) {
     setReport((prev) => {
@@ -78,29 +87,248 @@ export function RevisaoScreen() {
   }
 
   function handleRemoveField(key: string) {
-    setReport((prev) => prev ? { ...prev, fields: prev.fields.filter((field) => field.key !== key) } : prev);
+    setReport((prev) =>
+      prev ? { ...prev, fields: prev.fields.filter((f) => f.key !== key) } : prev,
+    );
   }
 
+  // ─── adicionar campo manualmente ─────────────────────────────────────────
+
+  function buildNewField(label: string, value: string): ReportField {
+    const keyBase = label
+      .toLocaleLowerCase('pt-BR')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_|_$/g, '') || 'informacao';
+    const key =
+      (report?.fields ?? []).some((f) => f.key === keyBase)
+        ? `${keyBase}_${Date.now()}`
+        : keyBase;
+    return {
+      form_field_id: null,
+      key,
+      label,
+      field_value: { type: 'text', value },
+      source: 'manual',
+      was_edited: true,
+      dynamic_type: 'text',
+    };
+  }
+
+  /** Adiciona o campo com valor manual (sem acionar a IA). */
   function handleAddField() {
     const label = newFieldLabel.trim();
     if (!label) return;
-    const keyBase = label.toLocaleLowerCase('pt-BR').normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'informacao';
+    const newField = buildNewField(label, newFieldValue);
     setReport((prev) => {
       if (!prev) return prev;
-      const key = prev.fields.some((field) => field.key === keyBase) ? `${keyBase}_${Date.now()}` : keyBase;
-      return {
-        ...prev,
-        fields: [...prev.fields, {
-          form_field_id: null, key, label,
-          field_value: { type: 'text', value: newFieldValue },
-          source: 'manual', was_edited: true, dynamic_type: 'text',
-        }],
-      };
+      return { ...prev, fields: [...prev.fields, newField] };
     });
     setNewFieldLabel('');
     setNewFieldValue('');
   }
+
+  /** Adiciona o campo e imediatamente pede à IA para preenchê-lo. */
+  async function handleAddFieldAndRefine() {
+    const label = newFieldLabel.trim();
+    if (!label) return;
+    if (!report) return;
+
+    // Verifica se há mídia disponível antes de continuar
+    const hasSomeMedia = report.captures.some(
+      (c) => c.type === 'photo' || c.type === 'voice' || c.type === 'text',
+    );
+    if (!hasSomeMedia) {
+      Alert.alert(
+        'Sem mídia original',
+        'Não há captura original associada a este relatório para analisar.',
+      );
+      return;
+    }
+
+    const newField = buildNewField(label, '');
+    // Adiciona o campo com valor vazio (placeholder enquanto a IA responde)
+    setReport((prev) => {
+      if (!prev) return prev;
+      return { ...prev, fields: [...prev.fields, newField] };
+    });
+    setNewFieldLabel('');
+    setNewFieldValue('');
+
+    // Dispara refinamento para o campo recém-adicionado
+    await runRefineForKey(newField, report);
+  }
+
+  // ─── handlers de refinamento ──────────────────────────────────────────────
+
+  /**
+   * Re-extrai um campo específico do relatório.
+   * Chama /extract/refine com apenas aquele campo como alvo.
+   */
+  async function handleRegenerateField(key: string) {
+    if (!report) return;
+    if (isRefining) return;
+
+    const targetField = report.fields.find((f) => f.key === key);
+    if (!targetField) return;
+
+    await runRefineForKey(targetField, report);
+  }
+
+  async function runRefineForKey(field: ReportField, currentReport: Report) {
+    const target: RefineTargetField = {
+      key: field.key,
+      label: field.label,
+      type: field.dynamic_type ?? field.field_value.type,
+      extraction_hint: field.label,
+    };
+
+    setRegeneratingKey(field.key);
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+
+    try {
+      const result = await refineFields(currentReport.captures, [target]);
+
+      if (!result.success || result.fields.length === 0) {
+        Alert.alert(
+          'Não encontrado',
+          result.error ?? 'A IA não encontrou esse dado na captura original.',
+        );
+        return;
+      }
+
+      const refined = result.fields.find((f) => f.key === field.key);
+      if (!refined || !refined.value) {
+        Alert.alert('Não encontrado', 'A IA não encontrou esse dado na captura original.');
+        return;
+      }
+
+      setReport((prev) => {
+        if (!prev) return prev;
+        const exists = prev.fields.some((f) => f.key === field.key);
+        if (exists) {
+          return {
+            ...prev,
+            fields: prev.fields.map((f) => {
+              if (f.key !== field.key) return f;
+              return {
+                ...f,
+                field_value: parseFieldValue(f.field_value.type, refined.value),
+                confidence: refined.confidence,
+                source: 'ai' as const,
+                was_edited: false,
+              };
+            }),
+          };
+        }
+        // Campo novo (adicionado manualmente + IA): adiciona com valor preenchido
+        return {
+          ...prev,
+          fields: [...prev.fields, {
+            ...field,
+            field_value: parseFieldValue('text', refined.value),
+            confidence: refined.confidence,
+            source: 'ai' as const,
+            was_edited: false,
+          }],
+        };
+      });
+
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    } finally {
+      setRegeneratingKey(null);
+    }
+  }
+
+  /**
+   * Regenera todos os campos do relatório.
+   * Pergunta se quer incluir campos editados manualmente.
+   */
+  async function handleRegenerateAll() {
+    if (!report) return;
+    if (isRefining) return;
+
+    const manualFields = report.fields.filter(
+      (f) => f.source === 'manual' || f.was_edited,
+    );
+    const hasManualEdits = manualFields.length > 0;
+
+    const doRefine = async (includeManual: boolean) => {
+      const fieldsToRefine = includeManual
+        ? report.fields
+        : report.fields.filter((f) => f.source !== 'manual' && !f.was_edited);
+
+      if (fieldsToRefine.length === 0) {
+        Alert.alert('Sem campos para regenerar', 'Todos os campos foram editados manualmente.');
+        return;
+      }
+
+      setIsRefiningAll(true);
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+
+      try {
+        const result = await refineFields(
+          report.captures,
+          toRefineTargetFields(fieldsToRefine),
+        );
+
+        if (!result.success) {
+          Alert.alert('Erro ao regenerar', result.error ?? 'Tente novamente em instantes.');
+          return;
+        }
+
+        const refinedMap = new Map(result.fields.map((f) => [f.key, f]));
+
+        setReport((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            fields: prev.fields.map((f) => {
+              const refined = refinedMap.get(f.key);
+              if (!refined) return f;
+              // Só sobrescreve se a IA trouxe um valor
+              if (!refined.value) return f;
+              return {
+                ...f,
+                field_value: parseFieldValue(f.field_value.type, refined.value),
+                confidence: refined.confidence,
+                source: 'ai' as const,
+                was_edited: false,
+              };
+            }),
+          };
+        });
+
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      } finally {
+        setIsRefiningAll(false);
+      }
+    };
+
+    if (hasManualEdits) {
+      Alert.alert(
+        'Regenerar tudo',
+        `Você editou ${manualFields.length} campo(s) manualmente. Quer incluí-los na regeneração?`,
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          {
+            text: 'Manter edições manuais',
+            onPress: () => void doRefine(false),
+          },
+          {
+            text: 'Incluir tudo',
+            style: 'destructive',
+            onPress: () => void doRefine(true),
+          },
+        ],
+      );
+    } else {
+      void doRefine(false);
+    }
+  }
+
+  // ─── salvar ───────────────────────────────────────────────────────────────
 
   async function handleSave() {
     if (!report) return;
@@ -121,64 +349,148 @@ export function RevisaoScreen() {
     }
   }
 
+  // ─── render ───────────────────────────────────────────────────────────────
+
+  const hasCaptures = report.captures.length > 0;
+  const canRefine =
+    hasCaptures &&
+    report.captures.some(
+      (c) =>
+        c.type === 'text' ||
+        (c.type !== 'manual' && (!!c.local_path || !!c.file_url)),
+    );
+
   return (
     <SafeAreaView style={styles.safe}>
       <LoadingOverlay visible={saving} message="Salvando..." />
       <KeyboardAvoidingScreen>
-      <ScrollView contentContainerStyle={styles.container} keyboardShouldPersistTaps="handled">
-        <Text style={styles.eyebrow}>{(report.context_label ?? report.form_template_name ?? 'INFORMAÇÃO').toUpperCase()}</Text>
-        <Text style={styles.title}>Confira os dados extraídos</Text>
-        <Text style={styles.subtitle}>Revise, corrija se necessário e salve o relatório.</Text>
+        <ScrollView
+          contentContainerStyle={styles.container}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text style={styles.eyebrow}>
+            {(report.context_label ?? report.form_template_name ?? 'INFORMAÇÃO').toUpperCase()}
+          </Text>
+          <Text style={styles.title}>Confira os dados extraídos</Text>
+          <Text style={styles.subtitle}>Revise, corrija se necessário e salve o relatório.</Text>
 
-        {report.extraction_purpose && (
-          <View style={styles.purposeBadge}>
-            <Ionicons name={purposeIcon(report.extraction_purpose)} size={13} color={colors.textSecondary} />
-            <Text style={styles.purposeBadgeText} numberOfLines={2}>
-              Finalidade: {purposeLabel(report.extraction_purpose)}
-              {report.extraction_custom_instruction ? ` — "${report.extraction_custom_instruction}"` : ''}
-            </Text>
-          </View>
-        )}
+          {report.extraction_purpose && (
+            <View style={styles.purposeBadge}>
+              <Ionicons name={purposeIcon(report.extraction_purpose)} size={13} color={colors.textSecondary} />
+              <Text style={styles.purposeBadgeText} numberOfLines={2}>
+                Finalidade: {purposeLabel(report.extraction_purpose)}
+                {report.extraction_custom_instruction ? ` — "${report.extraction_custom_instruction}"` : ''}
+              </Text>
+            </View>
+          )}
 
-        {extractionFailed && (
-          <View style={styles.warnBanner}>
-            <Ionicons name="alert-circle" size={18} color={colors.dangerStrong} />
-            <Text style={styles.warnBannerText}>
-              Não foi possível extrair automaticamente — preencha os campos manualmente.
-            </Text>
-          </View>
-        )}
+          {extractionFailed && (
+            <View style={styles.warnBanner}>
+              <Ionicons name="alert-circle" size={18} color={colors.dangerStrong} />
+              <Text style={styles.warnBannerText}>
+                Não foi possível extrair automaticamente — preencha os campos manualmente.
+              </Text>
+            </View>
+          )}
 
-        <CaptureOriginCard captures={report.captures} />
-
-        <View style={styles.card}>
-          <DynamicFields
-            fields={report.fields}
-            onChange={handleChange}
-            onRemove={handleRemoveField}
-            showEmptyMessage={false}
-          />
-          <View style={styles.addFieldArea}>
-            <Text style={styles.addFieldTitle}>Adicionar informação</Text>
-            <TextInput style={styles.addFieldInput} value={newFieldLabel} onChangeText={setNewFieldLabel}
-              placeholder="Nome da informação" placeholderTextColor={colors.textMuted} />
-            <TextInput style={styles.addFieldInput} value={newFieldValue} onChangeText={setNewFieldValue}
-              placeholder="Valor (opcional)" placeholderTextColor={colors.textMuted} />
-            <TouchableOpacity style={styles.addFieldButton} onPress={handleAddField} disabled={!newFieldLabel.trim()}>
-              <Text style={styles.addFieldButtonText}>Adicionar campo</Text>
+          {/* Botão "Regenerar tudo" */}
+          {canRefine && (
+            <TouchableOpacity
+              style={[styles.regenerateAllButton, isRefiningAll && styles.regenerateAllButtonDisabled]}
+              onPress={handleRegenerateAll}
+              disabled={isRefining}
+              activeOpacity={0.8}
+            >
+              {isRefiningAll ? (
+                <>
+                  <ActivityIndicator size="small" color={colors.primary} />
+                  <Text style={styles.regenerateAllText}>Analisando com IA…</Text>
+                </>
+              ) : (
+                <>
+                  <Ionicons name="refresh-circle-outline" size={18} color={colors.primary} />
+                  <Text style={styles.regenerateAllText}>Regenerar tudo com IA</Text>
+                </>
+              )}
             </TouchableOpacity>
+          )}
+
+          <CaptureOriginCard captures={report.captures} />
+
+          <View style={styles.card}>
+            <DynamicFields
+              fields={report.fields}
+              onChange={handleChange}
+              onRemove={handleRemoveField}
+              onRegenerate={canRefine ? handleRegenerateField : undefined}
+              regeneratingKey={regeneratingKey}
+              showEmptyMessage={false}
+            />
+
+            {/* Seção "Adicionar informação" */}
+            <View style={styles.addFieldArea}>
+              <Text style={styles.addFieldTitle}>Adicionar informação</Text>
+              <TextInput
+                style={styles.addFieldInput}
+                value={newFieldLabel}
+                onChangeText={setNewFieldLabel}
+                placeholder="Nome da informação"
+                placeholderTextColor={colors.textMuted}
+                editable={!isRefining}
+              />
+              <TextInput
+                style={styles.addFieldInput}
+                value={newFieldValue}
+                onChangeText={setNewFieldValue}
+                placeholder="Valor (deixe vazio para a IA preencher)"
+                placeholderTextColor={colors.textMuted}
+                editable={!isRefining}
+              />
+              <View style={styles.addFieldButtons}>
+                <TouchableOpacity
+                  style={[styles.addFieldButton, !newFieldLabel.trim() && styles.addFieldButtonDisabled]}
+                  onPress={handleAddField}
+                  disabled={!newFieldLabel.trim() || isRefining}
+                >
+                  <Ionicons name="add-circle-outline" size={15} color={colors.primary} />
+                  <Text style={styles.addFieldButtonText}>Adicionar</Text>
+                </TouchableOpacity>
+
+                {canRefine && (
+                  <TouchableOpacity
+                    style={[
+                      styles.addFieldButtonAI,
+                      (!newFieldLabel.trim() || isRefining) && styles.addFieldButtonDisabled,
+                    ]}
+                    onPress={() => void handleAddFieldAndRefine()}
+                    disabled={!newFieldLabel.trim() || isRefining}
+                  >
+                    {regeneratingKey === `_adding_${newFieldLabel}` ? (
+                      <ActivityIndicator size="small" color={colors.primary} />
+                    ) : (
+                      <Ionicons name="sparkles-outline" size={15} color={colors.primary} />
+                    )}
+                    <Text style={styles.addFieldButtonText}>IA preencher</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
           </View>
-        </View>
 
-        {report.items && report.items.length > 0 && (
-          <ItemsList items={report.items} onChange={handleItemsChange} />
-        )}
+          {report.items && report.items.length > 0 && (
+            <ItemsList items={report.items} onChange={handleItemsChange} />
+          )}
 
-        <TouchableOpacity style={styles.button} onPress={handleSave} activeOpacity={0.88}>
-          <Ionicons name="checkmark-circle" size={20} color={colors.textOnPrimary} />
-          <Text style={styles.buttonText}>Salvar relatório</Text>
-        </TouchableOpacity>
-      </ScrollView>
+          <TouchableOpacity
+            style={[styles.button, isRefining && styles.buttonDisabled]}
+            onPress={handleSave}
+            activeOpacity={0.88}
+            disabled={isRefining}
+          >
+            <Ionicons name="checkmark-circle" size={20} color={colors.textOnPrimary} />
+            <Text style={styles.buttonText}>Salvar relatório</Text>
+          </TouchableOpacity>
+        </ScrollView>
       </KeyboardAvoidingScreen>
     </SafeAreaView>
   );
@@ -214,21 +526,56 @@ const styles = StyleSheet.create({
     borderLeftWidth: 3, borderLeftColor: colors.danger,
   },
   warnBannerText: { flex: 1, fontSize: 12, fontWeight: '600', color: colors.dangerStrong },
+  // ─── Botão "Regenerar tudo" ────────────────────────────────────────────────
+  regenerateAllButton: {
+    flexDirection: 'row', alignItems: 'center', gap: spacing.sm,
+    backgroundColor: colors.primaryLight, borderRadius: radius.md,
+    paddingVertical: spacing.sm, paddingHorizontal: spacing.md,
+    marginBottom: spacing.lg,
+    borderWidth: 1, borderColor: colors.border,
+    alignSelf: 'flex-start',
+  },
+  regenerateAllButtonDisabled: { opacity: 0.5 },
+  regenerateAllText: { fontSize: 13, fontWeight: '700', color: colors.primary },
+  // ─── Card de campos ────────────────────────────────────────────────────────
   card: {
     backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.xl,
     borderWidth: 1, borderColor: colors.border, marginBottom: spacing.lg,
     ...shadows.sm,
   },
-  addFieldArea: { borderTopWidth: 1, borderTopColor: colors.border, marginTop: spacing.md, paddingTop: spacing.md, gap: spacing.sm },
+  // ─── Seção adicionar campo ─────────────────────────────────────────────────
+  addFieldArea: {
+    borderTopWidth: 1, borderTopColor: colors.border,
+    marginTop: spacing.md, paddingTop: spacing.md, gap: spacing.sm,
+  },
   addFieldTitle: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
-  addFieldInput: { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 10, color: colors.textPrimary, fontSize: 14 },
-  addFieldButton: { alignSelf: 'flex-start', backgroundColor: colors.primaryLight, borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 9 },
+  addFieldInput: {
+    backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border,
+    borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 10,
+    color: colors.textPrimary, fontSize: 14,
+  },
+  addFieldButtons: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  addFieldButton: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    alignSelf: 'flex-start', backgroundColor: colors.primaryLight,
+    borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 9,
+  },
+  addFieldButtonAI: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    alignSelf: 'flex-start',
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 9,
+    borderWidth: 1, borderColor: colors.primary,
+  },
+  addFieldButtonDisabled: { opacity: 0.4 },
   addFieldButtonText: { color: colors.primary, fontWeight: '700', fontSize: 13 },
+  // ─── Botão salvar ──────────────────────────────────────────────────────────
   button: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
     backgroundColor: colors.success, paddingVertical: spacing.lg,
     borderRadius: radius.lg, marginTop: spacing.md,
     ...shadows.md,
   },
+  buttonDisabled: { opacity: 0.6 },
   buttonText: { color: colors.textOnPrimary, fontSize: 16, fontWeight: '700' },
 });

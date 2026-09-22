@@ -80,6 +80,11 @@ export default function CapturaScreen() {
     !!stagedAudio ||
     stagedText.trim().length > 0;
 
+  // No modo automático, a captura acontece em duas etapas visuais:
+  // 1) adicionar a fonte; 2) definir a finalidade e enviar para análise.
+  // A finalidade só aparece depois que existe alguma fonte anexada.
+  const captureStep = hasStaged ? 2 : 1;
+
   // Acorda o backend assim que a tela abre — se o plano gratuito do Render
   // estiver "dormindo", o cold start (30-50s) acontece enquanto a pessoa
   // ainda está tirando a foto/gravando o áudio, em vez de durante a espera
@@ -966,7 +971,9 @@ export default function CapturaScreen() {
               style={shared.subtitle}
             >
               {isAutoMode
-                ? 'Junte foto, voz e/ou texto sobre a mesma informação — a IA organiza tudo'
+                ? captureStep === 1
+                  ? 'Adicione uma foto, voz ou texto para começar.'
+                  : 'Agora defina a finalidade e envie a informação para análise.'
                 : 'Grave por voz ou tire uma foto para começar'}
             </Text>
           </View>
@@ -990,18 +997,20 @@ export default function CapturaScreen() {
           {isAutoMode &&
             hasStaged &&
             !textMode && (
-              <View
-                style={
-                  local.stagedSection
-                }
-              >
-                <Text
-                  style={
-                    local.stagedLabel
-                  }
-                >
-                  Anexado nesta captura
-                </Text>
+              <>
+                <View style={local.stepHeader}>
+                  <View style={local.stepNumberActive}>
+                    <Text style={local.stepNumberTextActive}>1</Text>
+                  </View>
+                  <View style={local.stepHeaderText}>
+                    <Text style={local.stepTitle}>Fonte adicionada</Text>
+                    <Text style={local.stepSubtitle}>Confira o conteúdo antes de continuar.</Text>
+                  </View>
+                  <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
+                </View>
+
+                <View style={local.stagedSection}>
+                  <Text style={local.stagedLabel}>Conteúdo da captura</Text>
 
                 {stagedPhotos.length >
                   0 && (
@@ -1147,13 +1156,22 @@ export default function CapturaScreen() {
                   </View>
                 )}
 
-                <Text
-                  style={
-                    local.purposeLabel
-                  }
-                >
-                  Qual é a finalidade? (opcional)
-                </Text>
+                </View>
+
+                <View style={local.stepHeader}>
+                  <View style={local.stepNumberActive}>
+                    <Text style={local.stepNumberTextActive}>2</Text>
+                  </View>
+                  <View style={local.stepHeaderText}>
+                    <Text style={local.stepTitle}>Defina a finalidade</Text>
+                    <Text style={local.stepSubtitle}>Diga à IA o que você quer obter dessa informação.</Text>
+                  </View>
+                </View>
+
+                <View style={local.purposeSection}>
+                  <Text style={local.purposeLabel}>
+                    Qual é a finalidade? (opcional)
+                  </Text>
 
                 <View
                   style={
@@ -1287,10 +1305,24 @@ export default function CapturaScreen() {
                     </>
                   )}
                 </TouchableOpacity>
-              </View>
+                </View>
+              </>
             )}
 
           {!textMode && (
+            <>
+              {isAutoMode && !hasStaged && (
+                <View style={local.stepHeader}>
+                  <View style={local.stepNumberActive}>
+                    <Text style={local.stepNumberTextActive}>1</Text>
+                  </View>
+                  <View style={local.stepHeaderText}>
+                    <Text style={local.stepTitle}>Adicione uma fonte</Text>
+                    <Text style={local.stepSubtitle}>Use foto, voz ou texto para começar.</Text>
+                  </View>
+                </View>
+              )}
+
             <View
               style={
                 local.actionsRow
@@ -1480,6 +1512,7 @@ export default function CapturaScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
+            </>
           )}
 
           {textMode && (
@@ -1845,6 +1878,55 @@ const local = StyleSheet.create({
     letterSpacing: 1.2,
     textTransform: 'uppercase',
     marginBottom: 6,
+  },
+
+  stepHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    marginBottom: spacing.md,
+  },
+
+  stepNumberActive: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
+  stepNumberTextActive: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.textOnPrimary,
+  },
+
+  stepHeaderText: {
+    flex: 1,
+  },
+
+  stepTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: colors.textPrimary,
+  },
+
+  stepSubtitle: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+
+  purposeSection: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: spacing.lg,
+    marginBottom: spacing.xl,
+    ...shadows.sm,
   },
 
   actionsRow: {

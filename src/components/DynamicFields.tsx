@@ -1,4 +1,5 @@
 import {
+  ActivityIndicator,
   Text,
   TextInput,
   TouchableOpacity,
@@ -15,6 +16,8 @@ interface DynamicFieldsProps {
   fields: ReportField[];
   onChange: (key: string, rawValue: string) => void;
   onRemove?: (key: string) => void;
+  onRegenerate?: (key: string) => void;  // pede à IA para re-extrair este campo
+  regeneratingKey?: string | null;        // key do campo que está sendo refinado no momento
   showEmptyMessage?: boolean;
 }
 
@@ -22,6 +25,8 @@ export function DynamicFields({
   fields,
   onChange,
   onRemove,
+  onRegenerate,
+  regeneratingKey,
   showEmptyMessage = false,
 }: DynamicFieldsProps) {
   return (
@@ -108,12 +113,33 @@ export function DynamicFields({
                 />
               )}
 
+              {onRegenerate && (
+                regeneratingKey === field.key ? (
+                  <ActivityIndicator size="small" color={colors.primary} />
+                ) : (
+                  <TouchableOpacity
+                    onPress={() => onRegenerate(field.key)}
+                    hitSlop={8}
+                    disabled={!!regeneratingKey}
+                    style={{ opacity: regeneratingKey ? 0.4 : 1 }}
+                  >
+                    <Ionicons
+                      name="refresh-outline"
+                      size={16}
+                      color={colors.primary}
+                    />
+                  </TouchableOpacity>
+                )
+              )}
+
               {onRemove && (
                 <TouchableOpacity
                   onPress={() =>
                     onRemove(field.key)
                   }
                   hitSlop={8}
+                  disabled={!!regeneratingKey}
+                  style={{ opacity: regeneratingKey ? 0.4 : 1 }}
                 >
                   <Ionicons
                     name="trash-outline"

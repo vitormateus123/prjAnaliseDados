@@ -180,3 +180,32 @@ class AutoExtractResponse(BaseModel):
     model: str
     error: str | None = None
     retryable: bool = False
+
+
+# ─── refinamento: re-extração de campos específicos ──────────────────────────
+# Usado pelo endpoint POST /extract/refine — o app envia as capturas originais
+# (base64 ou file_url remota) e a lista de campos alvo; a IA re-analisa e
+# devolve apenas os valores desses campos.
+
+class RefineMediaItem(BaseModel):
+    """Mídia para refinamento: aceita base64 (data) OU URL remota (file_url).
+    Exatamente um dos dois deve estar presente."""
+    mime_type: str
+    data: str | None = None        # conteúdo em base64 (arquivo local)
+    file_url: str | None = None    # URL assinada (captura já sincronizada)
+
+
+class RefineRequest(BaseModel):
+    photos: list[RefineMediaItem] = []
+    audio: RefineMediaItem | None = None
+    text: str | None = None                    # texto digitado ou transcrição já disponível
+    target_fields: list[FieldHint]             # campos que devem ser (re)extraídos
+
+
+class RefineResponse(BaseModel):
+    success: bool
+    fields: list[ExtractedField] = []
+    provider: str
+    model: str
+    error: str | None = None
+    retryable: bool = False

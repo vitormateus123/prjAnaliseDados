@@ -116,6 +116,51 @@ async def extract_from_text(
     return _parse_guided_response(response)
 
 
+async def refine_fields(
+    fields: list[FieldHint],
+    photos: list[tuple[bytes, str]],
+    text: str | None,
+) -> list[ExtractedField]:
+    """Re-extrai campos específicos a partir das capturas originais.
+    Usado pelo endpoint /extract/refine — o usuário pede para a IA tentar de
+    novo só num subconjunto de campos (campo errado, campo novo adicionado
+    manualmente, ou todos de uma vez).
+
+    Aceita fotos (multimodal), texto (transcrição/texto digitado) ou ambos.
+    Sempre usa o modo guiado (PROMPT_TEMPLATE) — a IA só preenche os campos
+    explicitamente listados em `fields`."""
+    fields_spec = _build_fields_spec(fields)
+
+    if photos:
+        # Multimodal: foto(s) + prompt (+ texto opcional)
+        extra = (
+            f"\n\nINFORMAÇÃO ADICIONAL (texto digitado ou transcrição de áudio):\n{text}"
+            if text else ""
+        )
+        prompt = PROMPT_TEMPLATE.format(fields_spec=fields_spec) + extra
+        contents: list = [prompt]
+        for media_bytes, mime_type in photos:
+            contents.append(types.Part.from_bytes(data=media_bytes, mime_type=mime_type))
+        response = await _client.aio.models.generate_content(
+            model=_MODEL,
+            contents=contents,
+            config=_guided_config(),
+        )
+    else:
+        # Só texto (transcrição de áudio ou texto digitado)
+        prompt = (
+            PROMPT_TEMPLATE.format(fields_spec=fields_spec)
+            + f"\n\nTEXTO (transcrição ou texto digitado pelo usuário):\n{text or ''}"
+        )
+        response = await _client.aio.models.generate_content(
+            model=_MODEL,
+            contents=prompt,
+            config=_guided_config(),
+        )
+
+    return _parse_guided_response(response)
+
+
 # ─── MODO DESCOBERTA (sem template) ─────────────────────────────────────────
 
 _DISCOVERY_PROMPT = """Você é um assistente especializado em analisar qualquer tipo de informação e estruturá-la de forma organizada.

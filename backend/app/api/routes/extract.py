@@ -3,12 +3,14 @@ import base64
 import json
 import logging
 import time
+import httpx
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from typing import Optional
 from app.schemas.extraction import (
     ExtractResponse, FieldHint, ExtractedField,
     AutoExtractRequest, AutoExtractResponse, ExtractedItem,
     DynamicExtractedField, DynamicExtractedItem, EXTRACTION_PURPOSES,
+    RefineRequest, RefineResponse,
 )
 from app.schemas.discovery import DiscoveryResult, DiscoveredField
 from app.services import gemini_service, groq_service
@@ -370,3 +372,114 @@ async def extract_auto(payload: AutoExtractRequest):
     except Exception as e:
         logger.exception("Falha ao processar classificacao/estruturacao no modo automatico")
         return _auto_error(f"Erro ao interpretar resposta da IA: {e}")
+
+# ─── ENDPOINT DE REFINAMENTO ─────────────────────────────────────────────────
+# Recebe as capturas ORIGINAIS (base64 local OU file_url remota) e a lista de
+# campos alvo para re-extrair. Usado pelo app quando o usuário pede para a IA
+# tentar de novo em campos específicos (errados/vazios), preencher um campo
+# adicionado manualmente, ou regenerar tudo de uma vez.
+
+MAX_REFINE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+async def _resolve_refine_media(item) -> tuple[bytes, str]:
+    """Resolve um RefineMediaItem para (bytes, mime_type).
+    Aceita base64 (arquivo local) ou file_url (captura já sincronizada)."""
+    if item.data:
+        data = base64.b64decode(item.data)
+        if len(data) > MAX_REFINE_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail="Arquivo muito grande para refinamento (máx. 10 MB).",
+            )
+        return data, item.mime_type
+
+    if item.file_url:
+        # Captura já sincronizada: baixa do Storage via URL assinada.
+        # Timeout generoso — a URL pode ser de qualquer provedor de storage.
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(item.file_url)
+        if resp.status_code != 200:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Não foi possível baixar a mídia remota (status {resp.status_code}).",
+            )
+        data = resp.content
+        if len(data) > MAX_REFINE_FILE_SIZE:
+            raise HTTPException(
+                status_code=413,
+                detail="Arquivo remoto muito grande para refinamento (máx. 10 MB).",
+            )
+        return data, item.mime_type
+
+    raise HTTPException(
+        status_code=422,
+        detail="Cada mídia de refinamento precisa ter 'data' (base64) ou 'file_url'.",
+    )
+
+
+@router.post("/refine", response_model=RefineResponse)
+async def refine_fields(payload: RefineRequest):
+    """Re-extrai campos específicos a partir das capturas originais.
+
+    Casos de uso:
+    - Campo individual errado ou vazio → regenerar só ele.
+    - Campo adicionado manualmente → pedir à IA que preencha.
+    - Todos os campos → regenerar tudo (exceto os que o chamador optar por manter).
+
+    Aceita mídias locais (base64) ou remotas (file_url assinada) — o app
+    manda base64 quando o arquivo local existe e file_url quando a captura
+    já foi sincronizada e o arquivo local não está mais disponível.
+    """
+    if not payload.target_fields:
+        return RefineResponse(
+            success=False,
+            provider="gemini",
+            model=settings.gemini_model,
+            error="Nenhum campo alvo informado.",
+            retryable=False,
+        )
+
+    t0 = time.monotonic()
+    try:
+        # ── fotos ──
+        photos_bytes: list[tuple[bytes, str]] = []
+        for p in payload.photos:
+            photos_bytes.append(await _resolve_refine_media(p))
+
+        # ── áudio: transcreve se necessário ──
+        text = (payload.text or "").strip() or None
+        if payload.audio:
+            audio_bytes, audio_mime = await _resolve_refine_media(payload.audio)
+            transcript = await groq_service.transcribe_audio(audio_bytes, audio_mime)
+            t1 = time.monotonic()
+            print(f"[extract/refine] Groq STT: {t1 - t0:.1f}s", flush=True)
+            text = (f"{transcript}\n\n[Texto adicional]:\n{text}" if text else transcript)
+
+        # ── extração guiada dos campos alvo ──
+        extracted = await gemini_service.refine_fields(
+            payload.target_fields,
+            photos_bytes,
+            text,
+        )
+        t2 = time.monotonic()
+        print(f"[extract/refine] Gemini refinamento ({len(payload.target_fields)} campos): {t2 - t0:.1f}s", flush=True)
+
+        return RefineResponse(
+            success=True,
+            fields=extracted,
+            provider="gemini",
+            model=settings.gemini_model,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("Falha no refinamento de campos")
+        return RefineResponse(
+            success=False,
+            provider="gemini",
+            model=settings.gemini_model,
+            error=str(e),
+            retryable=True,
+        )
