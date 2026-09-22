@@ -18,6 +18,7 @@ import { CaptureOriginCard } from '../components/CaptureOriginCard';
 import { parseFieldValue } from '../utils/fieldValue';
 import { purposeIcon, purposeLabel } from '../constants/extractionPurpose';
 import { refineFields, toRefineTargetFields, RefineTargetField } from '../services/api/ai/RefineService';
+import { summarizeReport } from '../services/api/ai/SummaryService';
 import { colors, radius, shadows, spacing } from '../theme';
 
 function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {

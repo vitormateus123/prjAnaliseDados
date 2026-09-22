@@ -59,7 +59,7 @@ function fieldValueText(fv: FieldValue): string | null {
     case 'text':
     case 'long_text':
     case 'select':
-      return fv.value?.trim() ? truncate(fv.value.trim()) : null;
+      return fv.value?.trim() ? truncate(fv.value.trim(), 44) : null;
     case 'number':
     case 'decimal':
       return fv.value != null ? String(fv.value) : null;
@@ -71,7 +71,7 @@ function fieldValueText(fv: FieldValue): string | null {
     case 'boolean':
       return fv.value == null ? null : fv.value ? 'Sim' : 'Não';
     case 'multiselect':
-      return fv.value.length ? truncate(fv.value.join(', ')) : null;
+      return fv.value.length ? truncate(fv.value.join(', '), 44) : null;
     default:
       return null;
   }
@@ -127,21 +127,30 @@ function reportSearchableText(report: Report): string {
   return normalize(parts.join(' '));
 }
 
-/** Linha de resumo do card — os 2 primeiros campos preenchidos, na ordem em
- * que foram extraídos (que costuma colocar o mais identificador primeiro,
- * tipo número/nome). É o que diferencia duas capturas do mesmo tipo, já
- * que o título sozinho ("Nota Fiscal") é igual pras duas. */
-function reportSummary(report: Report): string {
-  const parts: string[] = [];
+/** Campos do card — até 3 pares label/valor, na ordem em que foram
+ * extraídos (que costuma colocar o mais identificador primeiro, tipo
+ * número/nome). É o que diferencia duas capturas do mesmo tipo, já que o
+ * título sozinho ("Nota Fiscal") é igual pras duas.
+ *
+ * Retornamos {label, value} em vez de string pronta: mostrar só o valor
+ * ("42 · São Paulo") não diz o que é 42 nem o que é São Paulo — o rótulo é
+ * o que deixa a extração reconhecível de relance, sem precisar abrir o
+ * relatório pra entender (heurística de "reconhecimento em vez de
+ * memorização" — a pessoa não precisa lembrar o que cada card contém). */
+function reportFieldEntries(report: Report): { label: string; value: string }[] {
+  const parts: { label: string; value: string }[] = [];
   for (const f of report.fields) {
     const text = fieldValueText(f.field_value);
-    if (text) parts.push(text);
-    if (parts.length === 2) break;
+    if (text) parts.push({ label: truncate(f.label, 24), value: text });
+    if (parts.length === 3) break;
   }
   if (report.items.length > 0) {
-    parts.push(`${report.items.length} ${report.items.length === 1 ? 'item' : 'itens'}`);
+    parts.push({
+      label: 'Itens',
+      value: `${report.items.length} ${report.items.length === 1 ? 'item' : 'itens'}`,
+    });
   }
-  return parts.length ? parts.join(' · ') : 'Sem informações preenchidas ainda — toque para revisar';
+  return parts;
 }
 
 function describeRemoteError(err: unknown): string {
@@ -428,31 +437,60 @@ export default function HistoricoScreen() {
         renderItem={({ item, section }) => {
           const meta = captureMeta(item);
           const status = STATUS_STYLE[item.status];
+          const entries = reportFieldEntries(item);
           return (
             <TouchableOpacity
-              style={local.card}
+              style={[local.card, { borderLeftColor: meta.color, borderLeftWidth: 3 }]}
               onPress={() => handleOpenReport(item)}
               activeOpacity={0.9}
             >
-              <View style={local.cardRow}>
+              <View style={local.cardHeaderRow}>
                 <View style={[local.captureIcon, { backgroundColor: meta.bg }]}>
-                  <Ionicons name={meta.icon} size={20} color={meta.color} />
+                  <Ionicons name={meta.icon} size={18} color={meta.color} />
                 </View>
-                <View style={local.cardInfo}>
-                  <Text style={local.cardTitle} numberOfLines={1}>
-                    {item.context_label || item.form_template_name || 'Informação recebida'}
-                  </Text>
-                  <Text style={local.cardSummary} numberOfLines={1}>{reportSummary(item)}</Text>
-                  <Text style={local.cardDate}>
-                    {formatCardDate(item.created_at, section.title)}
-                    {item.captures.length > 1 ? ` · ${item.captures.length} capturas combinadas` : ''}
-                    {purposeLabel(item.extraction_purpose) ? ` · ${purposeLabel(item.extraction_purpose)}` : ''}
-                  </Text>
-                </View>
+                <Text style={local.cardTitle} numberOfLines={1}>
+                  {item.context_label || item.form_template_name || 'Informação recebida'}
+                </Text>
                 <View style={[local.statusPill, { backgroundColor: status.bg }]}>
                   <Ionicons name={status.icon} size={12} color={status.text} />
                   <Text style={[local.statusText, { color: status.text }]}>{STATUS_LABEL[item.status]}</Text>
                 </View>
+              </View>
+
+              {/*
+                A descrição (campos extraídos) ficava espremida ao lado do
+                ícone + selo de status, sobrando pouquíssima largura pra
+                texto — por isso mostrava só 1-2 palavras. Agora ocupa a
+                largura inteira do card, numa linha por campo (como uma
+                mini lista de definição), o que dá espaço de sobra pra ler
+                o valor completo sem abrir o relatório.
+              */}
+              {entries.length > 0 ? (
+                <View style={local.cardSummaryList}>
+                  {entries.map((entry, idx) => (
+                    <Text
+                      key={`${entry.label}-${idx}`}
+                      style={local.cardSummaryRow}
+                      numberOfLines={1}
+                    >
+                      <Text style={local.cardSummaryLabel}>{entry.label}: </Text>
+                      <Text style={local.cardSummaryValue}>{entry.value}</Text>
+                    </Text>
+                  ))}
+                </View>
+              ) : (
+                <Text style={local.cardSummaryEmpty} numberOfLines={2}>
+                  Sem informações preenchidas ainda — toque para revisar
+                </Text>
+              )}
+
+              <View style={local.cardMetaRow}>
+                <Ionicons name="time-outline" size={11} color={colors.textMuted} />
+                <Text style={local.cardDate}>
+                  {formatCardDate(item.created_at, section.title)}
+                  {item.captures.length > 1 ? ` · ${item.captures.length} capturas combinadas` : ''}
+                  {purposeLabel(item.extraction_purpose) ? ` · ${purposeLabel(item.extraction_purpose)}` : ''}
+                </Text>
               </View>
 
               {item.status === 'error' && item.sync_error && (
@@ -567,18 +605,36 @@ const local = StyleSheet.create({
     borderWidth: 1, borderColor: colors.border, marginBottom: spacing.md,
     ...shadows.sm,
   },
-  cardRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  cardHeaderRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   captureIcon: {
-    width: 42, height: 42, borderRadius: radius.md,
-    alignItems: 'center', justifyContent: 'center', marginRight: spacing.md,
+    width: 32, height: 32, borderRadius: radius.md,
+    alignItems: 'center', justifyContent: 'center',
   },
-  // minWidth: 0 é o que faz o texto truncar em vez de empurrar/apertar o
-  // selo de status vizinho — sem isso, um View com flex:1 ainda reserva
+  // minWidth: 0 é o que faz o título truncar em vez de empurrar/apertar o
+  // selo de status vizinho — sem isso, um Text com flex:1 ainda reserva
   // espaço pelo conteúdo não-truncado em vez do espaço disponível de fato.
-  cardInfo: { flex: 1, minWidth: 0, marginRight: spacing.md },
-  cardTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary },
-  cardSummary: { fontSize: 13, color: colors.textSecondary, marginTop: 2, fontWeight: '500' },
-  cardDate: { fontSize: 12, color: colors.textMuted, marginTop: 3, fontWeight: '500' },
+  cardTitle: {
+    flex: 1, minWidth: 0, fontSize: 16, fontWeight: '800',
+    color: colors.textPrimary, letterSpacing: -0.2,
+  },
+  // A descrição (campos extraídos) é o que mais importa pra identificar um
+  // card em meio a outros do mesmo tipo. Antes ela dividia a linha com o
+  // ícone e o selo de status e sobrava pouca largura pra texto (só 1-2
+  // palavras apareciam); agora ocupa a largura inteira do card, uma linha
+  // por campo — como uma mini lista de definição, com o rótulo em negrito
+  // ancorando o valor ao que ele representa.
+  cardSummaryList: { marginTop: spacing.sm, gap: 3 },
+  cardSummaryRow: { fontSize: 14, lineHeight: 19 },
+  cardSummaryLabel: { fontSize: 14, fontWeight: '700', color: colors.textPrimary },
+  cardSummaryValue: { fontSize: 14, fontWeight: '500', color: colors.textSecondary },
+  cardSummaryEmpty: {
+    fontSize: 14, lineHeight: 19, marginTop: spacing.sm, fontStyle: 'italic', color: colors.textMuted,
+  },
+  // Linha de metadados (data, nº de capturas, finalidade) — deliberadamente
+  // menor e mais apagada que o resumo acima: é contexto de apoio, não o que
+  // diferencia um card do outro, então não deve competir por atenção.
+  cardMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: spacing.sm },
+  cardDate: { fontSize: 11, color: colors.textMuted, fontWeight: '500' },
   statusPill: {
     flexDirection: 'row', alignItems: 'center', borderRadius: radius.pill,
     paddingHorizontal: 10, paddingVertical: 5, gap: 4, flexShrink: 0,

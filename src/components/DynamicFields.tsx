@@ -59,18 +59,24 @@ export function DynamicFields({
         );
 
         /*
-         * Campos long_text sempre usam múltiplas linhas.
+         * TextInput de uma linha no React Native NÃO quebra texto — ele
+         * rola horizontalmente. Um limite de caracteres (ex: > 70) é uma
+         * aproximação ruim: a largura real depende do device, da fonte e
+         * dos caracteres em si, então valores mais curtos que o limite
+         * ainda podem estourar a largura do campo e exigir arrastar.
          *
-         * Também tratamos como multiline qualquer valor textual
-         * suficientemente grande. Isso evita que um campo classificado
-         * como texto simples fique em uma única linha e obrigue o usuário
-         * a arrastar horizontalmente.
+         * Em vez de adivinhar por tamanho, decidimos por TIPO: qualquer
+         * campo cujo valor é texto livre (text, long_text, select,
+         * multiselect) sempre quebra linha e cresce com o conteúdo — nunca
+         * precisa de scroll horizontal. Tipos com formato curto e fixo
+         * (number, decimal, date, boolean) continuam em uma linha, já que
+         * nunca estouram a largura do campo.
          */
-        const isLongValue = value.trim().length > 70;
-
         const isMultiline =
+          field.field_value.type === 'text' ||
           field.field_value.type === 'long_text' ||
-          isLongValue;
+          field.field_value.type === 'select' ||
+          field.field_value.type === 'multiselect';
 
         const wasEdited = field.was_edited;
 
@@ -171,10 +177,13 @@ export function DynamicFields({
                   event.nativeEvent.contentSize
                     .height;
 
+                // Base de 54 (mesma altura do input de uma linha) — cresce
+                // só quando o conteúdo realmente precisa de mais espaço,
+                // em vez de forçar 96px pra um valor curto como "São Paulo".
                 event.currentTarget.setNativeProps({
                   style: {
                     height: Math.max(
-                      96,
+                      54,
                       height + 24,
                     ),
                   },
@@ -184,7 +193,7 @@ export function DynamicFields({
                 styles.input,
 
                 isMultiline && {
-                  minHeight: 96,
+                  minHeight: 54,
                   paddingTop: 12,
                   paddingBottom: 12,
                   textAlignVertical: 'top',

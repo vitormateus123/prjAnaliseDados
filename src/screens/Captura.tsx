@@ -25,6 +25,7 @@ import { RootStackParamList } from '../../App';
 import { KeyboardAvoidingScreen } from '../components/KeyboardAvoidingScreen';
 import { extractFields } from '../services/api/ai/ExtractionService';
 import { autoExtractCombined, StagedPhoto } from '../services/api/ai/AutoExtractionService';
+import { summarizeReport } from '../services/api/ai/SummaryService';
 import { checkHealth } from '../services/api/apiClient';
 import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
@@ -160,6 +161,10 @@ export default function CapturaScreen() {
       updated_at: now,
     };
 
+    // Best-effort: se a IA não conseguir gerar o resumo (rede, timeout),
+    // ai_summary fica null e o card do Histórico volta a listar os campos.
+    report.ai_summary = await summarizeReport(report);
+
     await StorageService.upsertReport(report);
 
     clearStaged();
@@ -261,6 +266,10 @@ export default function CapturaScreen() {
       created_at: now,
       updated_at: now,
     };
+
+    // Best-effort: se a IA não conseguir gerar o resumo (rede, timeout),
+    // ai_summary fica null e o card do Histórico volta a listar os campos.
+    report.ai_summary = await summarizeReport(report);
 
     await StorageService.upsertReport(report);
 
