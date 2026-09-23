@@ -18,6 +18,7 @@ from app.services import gemini_service, groq_service
 from app.services.supabase_service import get_client
 from app.api.routes.templates import FIELD_TYPES
 from app.core.config import settings
+from app.security.auth import get_current_user
 
 logger = logging.getLogger("extract")
 router = APIRouter()
@@ -317,7 +318,19 @@ async def extract_auto(payload: AutoExtractRequest):
         # ─── match="existing": reaproveita um formulário já cadastrado ───
         if match == "existing" and result.get("template_id"):
             template_id = result["template_id"]
-            new_field_keys = _add_suggested_fields(template_id, result.get("suggested_fields") or [])
+
+            # Somente administradores podem persistir campos sugeridos pela IA.
+            # Usuários comuns continuam podendo usar a extração normalmente,
+            # mas a execução não altera a estrutura do template.
+            user = get_current_user()
+            if user.role == "admin":
+                new_field_keys = _add_suggested_fields(
+                    template_id,
+                    result.get("suggested_fields") or [],
+                )
+            else:
+                new_field_keys = []
+
             template_row_resp = (
                 get_client().table("form_templates")
                 .select("name,has_items")

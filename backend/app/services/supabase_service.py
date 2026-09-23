@@ -1,12 +1,40 @@
 # backend/app/services/supabase_service.py
 from supabase import create_client, Client
+from supabase.lib.client_options import ClientOptions
 from app.core.config import settings
 
-# Client com a service_role key — só existe aqui no backend, nunca no app.
-# Ela ignora o RLS, então qualquer checagem de permissão/organização
-# precisa ser feita explicitamente nas rotas que usam este client.
-_client: Client = create_client(settings.supabase_url, settings.supabase_service_key)
+
+_admin_client: Client = create_client(
+    settings.supabase_url,
+    settings.supabase_service_key,
+    options=ClientOptions(
+        auto_refresh_token=False,
+        persist_session=False,
+    ),
+)
+
+
+def get_admin_client() -> Client:
+    """Privileged client. Only authentication/profile lookups and other
+    explicitly administrative operations may use this client."""
+    return _admin_client
 
 
 def get_client() -> Client:
-    return _client
+    """Return a request-scoped client carrying the caller's JWT.
+
+    The service key remains server-side, but the Authorization header is the
+    user's access token, so Supabase evaluates RLS as that authenticated user.
+    """
+    from app.security.auth import get_access_token
+
+    token = get_access_token()
+    return create_client(
+        settings.supabase_url,
+        settings.supabase_service_key,
+        options=ClientOptions(
+            auto_refresh_token=False,
+            persist_session=False,
+            headers={"Authorization": f"Bearer {token}"},
+        ),
+    )

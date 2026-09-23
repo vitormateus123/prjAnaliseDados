@@ -5,6 +5,7 @@ import { useFocusEffect, useNavigation, NavigationProp } from '@react-navigation
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService } from '../storage/StorageService';
 import { syncPendingReports } from '../services/sync/SyncService';
+import { supabase } from '../services/auth/supabaseClient';
 import { RootStackParamList } from '../../App';
 import { colors, radius, shadows, spacing } from '../theme';
 
@@ -20,13 +21,8 @@ export default function AjustesScreen() {
   }, []);
 
   useEffect(() => {
-    // Estado inicial de conectividade
     NetInfo.fetch().then((state) => setIsOnline(!!state.isConnected));
-
-    // Passa a refletir mudanças reais de rede (wifi ligando/desligando etc.)
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      setIsOnline(!!state.isConnected);
-    });
+    const unsubscribe = NetInfo.addEventListener((state) => setIsOnline(!!state.isConnected));
     return unsubscribe;
   }, []);
 
@@ -53,6 +49,13 @@ export default function AjustesScreen() {
       }
     } finally {
       setSyncing(false);
+    }
+  }
+
+  async function handleLogout() {
+    const { error } = await supabase.auth.signOut({ scope: 'local' });
+    if (error) {
+      Alert.alert('Não foi possível sair', 'Tente novamente.');
     }
   }
 
@@ -129,6 +132,21 @@ export default function AjustesScreen() {
           </View>
           <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
         </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.logoutCard}
+          onPress={handleLogout}
+          activeOpacity={0.85}
+        >
+          <View style={styles.logoutIconWrap}>
+            <Ionicons name="log-out-outline" size={20} color={colors.danger} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.logoutTitle}>Sair</Text>
+            <Text style={styles.actionDesc}>Encerrar a sessão neste dispositivo</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
   );
@@ -164,4 +182,16 @@ const styles = StyleSheet.create({
   },
   actionTitle: { fontSize: 15, fontWeight: '700', color: colors.textPrimary },
   actionDesc: { fontSize: 12, color: colors.textSecondary, marginTop: 2 },
+  logoutCard: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg,
+    borderWidth: 1, borderColor: colors.dangerSoft, marginTop: spacing.xl,
+    ...shadows.sm,
+  },
+  logoutIconWrap: {
+    width: 42, height: 42, borderRadius: radius.md,
+    alignItems: 'center', justifyContent: 'center', marginRight: spacing.md,
+    backgroundColor: colors.dangerSoft,
+  },
+  logoutTitle: { fontSize: 15, fontWeight: '700', color: colors.danger },
 });

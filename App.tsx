@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import {
   NavigationContainer,
   DefaultTheme,
@@ -10,8 +10,9 @@ import {
   createBottomTabNavigator,
 } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
+import { Session } from '@supabase/supabase-js';
 
-import WelcomeScreen from './src/screens/Welcome';
+import LoginScreen from './src/screens/Login';
 import CapturaScreen from './src/screens/Captura';
 import { RevisaoScreen } from './src/screens/RevisaoScreen';
 import HistoricoScreen from './src/screens/Historico';
@@ -19,17 +20,16 @@ import AjustesScreen from './src/screens/Ajustes';
 import { TemplatesRevisaoScreen } from './src/screens/TemplatesRevisao';
 import { GerenciarFormulariosScreen } from './src/screens/GerenciarFormularios';
 import { startAutoSync } from './src/services/sync/SyncService';
+import { supabase } from './src/services/auth/supabaseClient';
 import { colors } from './src/theme';
 
-// Tabs da tela "Principal"
 export type MainTabParamList = {
   'Histórico': undefined;
   Ajustes: undefined;
 };
 
-// Pilha raiz do app
 export type RootStackParamList = {
-  Welcome: undefined;
+  Login: undefined;
   Principal:
     | {
         screen?: keyof MainTabParamList;
@@ -48,11 +48,8 @@ export type RootStackParamList = {
   GerenciarFormularios: undefined;
 };
 
-const Stack =
-  createNativeStackNavigator<RootStackParamList>();
-
-const Tab =
-  createBottomTabNavigator<MainTabParamList>();
+const Stack = createNativeStackNavigator<RootStackParamList>();
+const Tab = createBottomTabNavigator<MainTabParamList>();
 
 const navTheme = {
   ...DefaultTheme,
@@ -70,13 +67,11 @@ const screenHeaderOptions = {
   headerStyle: {
     backgroundColor: colors.surface,
   },
-
   headerTitleStyle: {
     fontWeight: '800' as const,
     color: colors.textPrimary,
     fontSize: 17,
   },
-
   headerTintColor: colors.primary,
   headerShadowVisible: false,
 };
@@ -86,44 +81,26 @@ function MainTabs() {
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
-
-        tabBarActiveTintColor:
-          colors.primary,
-
-        tabBarInactiveTintColor:
-          colors.textMuted,
-
+        tabBarActiveTintColor: colors.primary,
+        tabBarInactiveTintColor: colors.textMuted,
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: '700',
           marginBottom: 4,
         },
-
         tabBarStyle: {
-          backgroundColor:
-            colors.surface,
-          borderTopColor:
-            colors.border,
+          backgroundColor: colors.surface,
+          borderTopColor: colors.border,
           borderTopWidth: 1,
           height: 64,
           paddingTop: 8,
           paddingBottom: 10,
         },
-
-        tabBarIcon: ({
-          color,
-          focused,
-          size,
-        }) => {
+        tabBarIcon: ({ color, focused, size }) => {
           const iconName =
             route.name === 'Histórico'
-              ? focused
-                ? 'time'
-                : 'time-outline'
-              : focused
-                ? 'settings'
-                : 'settings-outline';
-
+              ? focused ? 'time' : 'time-outline'
+              : focused ? 'settings' : 'settings-outline';
           return (
             <Ionicons
               name={iconName as any}
@@ -134,91 +111,94 @@ function MainTabs() {
         },
       })}
     >
-      <Tab.Screen
-        name="Histórico"
-        component={HistoricoScreen}
-      />
-
-      <Tab.Screen
-        name="Ajustes"
-        component={AjustesScreen}
-      />
+      <Tab.Screen name="Histórico" component={HistoricoScreen} />
+      <Tab.Screen name="Ajustes" component={AjustesScreen} />
     </Tab.Navigator>
   );
 }
 
-export default function App() {
-  // Liga a sincronização automática em segundo plano
-  // uma única vez, pra valer em qualquer tela do app.
+function AuthenticatedNavigator() {
   useEffect(() => {
-    const stopAutoSync =
-      startAutoSync();
-
+    const stopAutoSync = startAutoSync();
     return stopAutoSync;
   }, []);
 
   return (
-    <NavigationContainer
-      theme={navTheme}
+    <Stack.Navigator
+      screenOptions={screenHeaderOptions}
     >
-      <Stack.Navigator
-        initialRouteName="Welcome"
-        screenOptions={
-          screenHeaderOptions
-        }
-      >
-        <Stack.Screen
-          name="Welcome"
-          component={WelcomeScreen}
-          options={{
-            headerShown: false,
-          }}
-        />
+      <Stack.Screen
+        name="Principal"
+        component={MainTabs}
+        options={{ headerShown: false }}
+      />
+      <Stack.Screen
+        name="Captura"
+        component={CapturaScreen}
+        options={{ title: 'Captura' }}
+      />
+      <Stack.Screen
+        name="Revisao"
+        component={RevisaoScreen}
+        options={{ title: 'Revisão' }}
+      />
+      <Stack.Screen
+        name="TemplatesRevisao"
+        component={TemplatesRevisaoScreen}
+        options={{ title: 'Formulários pendentes' }}
+      />
+      <Stack.Screen
+        name="GerenciarFormularios"
+        component={GerenciarFormulariosScreen}
+        options={{ title: 'Gerenciar formulários' }}
+      />
+    </Stack.Navigator>
+  );
+}
 
-        <Stack.Screen
-          name="Principal"
-          component={MainTabs}
-          options={{
-            headerShown: false,
-          }}
-        />
+export default function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
-        <Stack.Screen
-          name="Captura"
-          component={CapturaScreen}
-          options={{
-            title: 'Captura',
-          }}
-        />
+  useEffect(() => {
+    let mounted = true;
 
-        <Stack.Screen
-          name="Revisao"
-          component={RevisaoScreen}
-          options={{
-            title: 'Revisão',
-          }}
-        />
+    supabase.auth.getSession().then(({ data }) => {
+      if (mounted) {
+        setSession(data.session);
+        setAuthLoading(false);
+      }
+    }).catch(() => {
+      if (mounted) {
+        setSession(null);
+        setAuthLoading(false);
+      }
+    });
 
-        <Stack.Screen
-          name="TemplatesRevisao"
-          component={
-            TemplatesRevisaoScreen
-          }
-          options={{
-            title: 'Formulários pendentes',
-          }}
-        />
+    const { data: listener } = supabase.auth.onAuthStateChange(
+      (_event, nextSession) => {
+        setSession(nextSession);
+        setAuthLoading(false);
+      },
+    );
 
-        <Stack.Screen
-          name="GerenciarFormularios"
-          component={
-            GerenciarFormulariosScreen
-          }
-          options={{
-            title: 'Gerenciar formulários',
-          }}
-        />
-      </Stack.Navigator>
+    return () => {
+      mounted = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
+
+  if (authLoading) {
+    return null;
+  }
+
+  return (
+    <NavigationContainer theme={navTheme}>
+      {session ? <AuthenticatedNavigator /> : (
+        <Stack.Navigator screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="Login" component={LoginScreen} />
+        </Stack.Navigator>
+      )}
     </NavigationContainer>
   );
 }

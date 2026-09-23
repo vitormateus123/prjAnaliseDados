@@ -1,28 +1,43 @@
 # backend/app/core/config.py
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     gemini_api_key: str
     groq_api_key: str
     supabase_url: str
     supabase_service_key: str    # service role — NUNCA expor no app
 
-    # Nome do modelo Gemini. Fica aqui (e não hardcoded no service) porque o
-    # Google aposenta modelos periodicamente: o gemini-2.0-flash-lite foi
-    # desligado em 01/06/2026 e passou a retornar 404. Sobrescreva com
-    # GEMINI_MODEL no .env quando precisar trocar.
     gemini_model: str = "gemini-3.5-flash-lite"
 
-    # String simples e separada por vírgula no .env, ex:
-    # ALLOWED_ORIGINS=http://localhost:19006,exp://192.168.1.6:8081
-    # (mantido como str, e não list[str], porque o pydantic-settings tenta
-    # decodificar campos list como JSON e quebraria com vírgulas soltas)
-    allowed_origins: str = "*"
+    # Produção deve declarar uma lista explícita. O wildcard só é permitido
+    # fora de produção para facilitar o desenvolvimento local.
+    allowed_origins: str = "http://localhost:8081,http://localhost:19006"
+    app_env: str = "development"
+
+    @model_validator(mode="after")
+    def validate_production_security(self):
+        if self.app_env.lower() in {"production", "prod"} and not self.supabase_url.startswith("https://"):
+            raise ValueError("SUPABASE_URL deve usar HTTPS em produção.")
+        return self
 
     @property
     def allowed_origins_list(self) -> list[str]:
-        return [origin.strip() for origin in self.allowed_origins.split(",") if origin.strip()]
+        origins = [
+            origin.strip()
+            for origin in self.allowed_origins.split(",")
+            if origin.strip()
+        ]
+        if self.app_env.lower() in {"production", "prod"} and (
+            not origins or "*" in origins
+        ):
+            raise RuntimeError(
+                "ALLOWED_ORIGINS deve ser explícito em produção; wildcard não é permitido."
+            )
+        return origins
+
 
 settings = Settings()
