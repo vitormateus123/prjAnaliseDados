@@ -1,10 +1,13 @@
 # backend/app/main.py
+import logging
 from fastapi import FastAPI, Request, HTTPException, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.api.routes import templates, reports, extract
 from app.core.config import settings
 from app.security.auth import authenticate_request, clear_auth_context
+
+logger = logging.getLogger("app")
 
 app = FastAPI(title="Campo — Análise de Dados API", version="1.0.0")
 
@@ -40,7 +43,12 @@ async def require_authenticated_user(request: Request, call_next):
     except Exception as exc:
         if isinstance(exc, HTTPException):
             raise
-        # Do not expose internal exception text, SQL, paths or provider data.
+        # A resposta ao app continua genérica (sem expor SQL/paths/provider
+        # data), mas o log do servidor precisa do traceback real — sem isso
+        # todo 500 vira uma caixa-preta.
+        logger.exception(
+            "Erro nao tratado em %s %s", request.method, request.url.path
+        )
         return JSONResponse(
             status_code=500,
             content={"detail": "Erro interno do servidor."},

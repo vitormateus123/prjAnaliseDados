@@ -407,13 +407,19 @@ def create_report(report: ReportIn):
 @router.get("/", response_model=list[ReportOut])
 def list_reports(limit: int = 100):
     supabase = get_client()
-    resp = (
-        supabase.table("reports")
-        .select(_REPORT_SELECT)
-        .order("updated_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
+    try:
+        resp = (
+            supabase.table("reports")
+            .select(_REPORT_SELECT)
+            .order("updated_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except PostgrestAPIError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Erro ao buscar relatorios: {e.message}",
+        )
     rows = resp.data or []
     url_map = _resolve_capture_urls(rows)
     return [_row_to_report_out(row, url_map) for row in rows]
@@ -422,12 +428,18 @@ def list_reports(limit: int = 100):
 @router.get("/{report_id}", response_model=ReportOut)
 def get_report(report_id: str):
     supabase = get_client()
-    resp = (
-        supabase.table("reports")
-        .select(_REPORT_SELECT)
-        .eq("id", report_id)
-        .execute()
-    )
+    try:
+        resp = (
+            supabase.table("reports")
+            .select(_REPORT_SELECT)
+            .eq("id", report_id)
+            .execute()
+        )
+    except PostgrestAPIError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Erro ao buscar relatorio: {e.message}",
+        )
     rows = resp.data or []
     if not rows:
         raise HTTPException(status_code=404, detail="Relatorio nao encontrado.")
