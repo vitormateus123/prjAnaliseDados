@@ -1,0 +1,253 @@
+From 701629dd75d2970511158cef7a21925b91f51547 Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.local>
+Date: Thu, 24 Sep 2026 19:44:58 +0000
+Subject: [PATCH] feat(pdf): visualizar o PDF em vez de compartilhar
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+O botão agora só abre o PDF: no Android abre o leitor de PDF do aparelho
+(ACTION_VIEW via expo-intent-launcher + content URI), com fallback para a
+pré-visualização de impressão; no iOS abre a pré-visualização do sistema
+(Print.printAsync). Compartilhar/salvar fica no próprio visualizador.
+
+- exportReportAsPdf -> openReportPdf; botão da Revisão vira 'Visualizar PDF'
+- troca expo-sharing por expo-intent-launcher (~57.0.1)
+---
+ package-lock.json                    | 27 +++++--------
+ package.json                         |  2 +-
+ src/screens/Historico.tsx            |  4 +-
+ src/screens/RevisaoScreen.tsx        | 10 ++---
+ src/services/pdf/ReportPdfService.ts | 58 +++++++++++++++++-----------
+ 5 files changed, 54 insertions(+), 47 deletions(-)
+
+diff --git a/package-lock.json b/package-lock.json
+index 02091fd..90acdf4 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -22,9 +22,9 @@
+         "expo-file-system": "~57.0.7",
+         "expo-haptics": "~57.0.3",
+         "expo-image-picker": "^57.0.16",
++        "expo-intent-launcher": "~57.0.1",
+         "expo-linear-gradient": "~57.0.2",
+         "expo-print": "~57.0.2",
+-        "expo-sharing": "~57.0.22",
+         "expo-speech": "^57.0.2",
+         "expo-status-bar": "~57.0.1",
+         "expo-updates": "~57.0.22",
+@@ -3053,6 +3053,15 @@
+         "expo": "*"
+       }
+     },
++    "node_modules/expo-intent-launcher": {
++      "version": "57.0.1",
++      "resolved": "https://registry.npmjs.org/expo-intent-launcher/-/expo-intent-launcher-57.0.1.tgz",
++      "integrity": "sha512-BYiPEOUeW3AkW/uxEESbS2UBw9LasJ8Heb6A8kF9Ueh6pqrXQHMNJFHzfrOP8qZfv9G2e8CTzrtzpN5p0vH5fA==",
++      "license": "MIT",
++      "peerDependencies": {
++        "expo": "*"
++      }
++    },
+     "node_modules/expo-json-utils": {
+       "version": "57.0.2",
+       "resolved": "https://registry.npmjs.org/expo-json-utils/-/expo-json-utils-57.0.2.tgz",
+@@ -3146,22 +3155,6 @@
+         "node": ">=20.16.0"
+       }
+     },
+-    "node_modules/expo-sharing": {
+-      "version": "57.0.22",
+-      "resolved": "https://registry.npmjs.org/expo-sharing/-/expo-sharing-57.0.22.tgz",
+-      "integrity": "sha512-IWmiz0Dnjd7ifsZ2Gg5XODxb6DQoJ4/H6FofW9bTL9gDjfX2+va8SV1BYVkFvJ8vKQoKR4HgkMCKDCZlrrbKkg==",
+-      "license": "MIT",
+-      "dependencies": {
+-        "@expo/config-plugins": "^57.0.9",
+-        "@expo/config-types": "^57.0.2",
+-        "@expo/plist": "^0.8.1"
+-      },
+-      "peerDependencies": {
+-        "expo": "*",
+-        "react": "*",
+-        "react-native": "*"
+-      }
+-    },
+     "node_modules/expo-speech": {
+       "version": "57.0.2",
+       "resolved": "https://registry.npmjs.org/expo-speech/-/expo-speech-57.0.2.tgz",
+diff --git a/package.json b/package.json
+index 9c29162..59aa531 100644
+--- a/package.json
++++ b/package.json
+@@ -17,9 +17,9 @@
+     "expo-file-system": "~57.0.7",
+     "expo-haptics": "~57.0.3",
+     "expo-image-picker": "^57.0.16",
++    "expo-intent-launcher": "~57.0.1",
+     "expo-linear-gradient": "~57.0.2",
+     "expo-print": "~57.0.2",
+-    "expo-sharing": "~57.0.22",
+     "expo-speech": "^57.0.2",
+     "expo-status-bar": "~57.0.1",
+     "expo-updates": "~57.0.22",
+diff --git a/src/screens/Historico.tsx b/src/screens/Historico.tsx
+index e24af20..0144a06 100644
+--- a/src/screens/Historico.tsx
++++ b/src/screens/Historico.tsx
+@@ -8,7 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
+ import { StorageService } from '../storage/StorageService';
+ import { fetchRemoteReports } from '../services/api/reports/ReportsService';
+ import { syncReport } from '../services/sync/SyncService';
+-import { exportReportAsPdf } from '../services/pdf/ReportPdfService';
++import { openReportPdf } from '../services/pdf/ReportPdfService';
+ import { NetworkError, ApiError } from '../services/api/apiClient';
+ import { Report, ReportField, FieldValue } from '../types/reports';
+ import { purposeLabel } from '../constants/extractionPurpose';
+@@ -297,7 +297,7 @@ export default function HistoricoScreen() {
+     if (exportingId) return;
+     setExportingId(report.id);
+     try {
+-      await exportReportAsPdf(report);
++      await openReportPdf(report);
+     } catch (err) {
+       Alert.alert(
+         'Não foi possível gerar o PDF',
+diff --git a/src/screens/RevisaoScreen.tsx b/src/screens/RevisaoScreen.tsx
+index b1a433f..8ece015 100644
+--- a/src/screens/RevisaoScreen.tsx
++++ b/src/screens/RevisaoScreen.tsx
+@@ -19,7 +19,7 @@ import { parseFieldValue } from '../utils/fieldValue';
+ import { purposeIcon, purposeLabel } from '../constants/extractionPurpose';
+ import { refineFields, toRefineTargetFields, RefineTargetField } from '../services/api/ai/RefineService';
+ import { summarizeReport } from '../services/api/ai/SummaryService';
+-import { exportReportAsPdf } from '../services/pdf/ReportPdfService';
++import { openReportPdf } from '../services/pdf/ReportPdfService';
+ import { colors, radius, shadows, spacing } from '../theme';
+ 
+ function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
+@@ -374,15 +374,15 @@ export function RevisaoScreen() {
+     }
+   }
+ 
+-  // ─── exportar PDF ─────────────────────────────────────────────────────────
++  // ─── visualizar PDF ───────────────────────────────────────────────────────
+ 
+-  /** Exporta o que está na tela agora (inclui edições ainda não salvas) —
++  /** Abre o PDF do que está na tela agora (inclui edições ainda não salvas) —
+    * não depende de salvar antes. */
+   async function handleExportPdf() {
+     if (!report || exportingPdf) return;
+     setExportingPdf(true);
+     try {
+-      await exportReportAsPdf(report);
++      await openReportPdf(report);
+     } catch (err) {
+       Alert.alert(
+         'Não foi possível gerar o PDF',
+@@ -537,7 +537,7 @@ export function RevisaoScreen() {
+               <Ionicons name="document-outline" size={20} color={colors.primary} />
+             )}
+             <Text style={styles.exportButtonText}>
+-              {exportingPdf ? 'Gerando PDF…' : 'Exportar PDF'}
++              {exportingPdf ? 'Gerando PDF…' : 'Visualizar PDF'}
+             </Text>
+           </TouchableOpacity>
+ 
+diff --git a/src/services/pdf/ReportPdfService.ts b/src/services/pdf/ReportPdfService.ts
+index 4761c38..7363e05 100644
+--- a/src/services/pdf/ReportPdfService.ts
++++ b/src/services/pdf/ReportPdfService.ts
+@@ -1,14 +1,14 @@
+ // src/services/pdf/ReportPdfService.ts
+-// Exporta um Report como PDF (expo-print) e abre o menu de compartilhar do
+-// sistema (expo-sharing). Todo o texto do documento vem de
+-// utils/reportPdfHtml.ts — aqui fica só o I/O: ler as fotos, gerar o
+-// arquivo, renomear e compartilhar.
++// Gera o PDF de um Report (expo-print) e o abre para visualização. Todo o
++// texto do documento vem de utils/reportPdfHtml.ts — aqui fica só o I/O:
++// ler as fotos, gerar o arquivo e abri-lo. Compartilhar/salvar fica por
++// conta do próprio visualizador.
+ import { Platform } from 'react-native';
+ import * as Print from 'expo-print';
+-import * as Sharing from 'expo-sharing';
++import * as IntentLauncher from 'expo-intent-launcher';
+ import * as FileSystem from 'expo-file-system/legacy';
+ import { Capture, Report } from '../../types/reports';
+-import { buildReportPdfHtml, reportPdfFileName, reportTitle } from '../../utils/reportPdfHtml';
++import { buildReportPdfHtml, reportPdfFileName } from '../../utils/reportPdfHtml';
+ 
+ // A4 em pontos (72 dpi) — o padrão do expo-print é US Letter.
+ const A4_WIDTH = 595;
+@@ -68,10 +68,12 @@ async function loadImages(report: Report): Promise<Record<string, string>> {
+   return images;
+ }
+ 
+-/** Gera o PDF do relatório e abre o compartilhar do sistema (salvar em
+- * Arquivos, WhatsApp, e-mail...). Lança Error com mensagem legível se algo
+- * falhar — quem chama decide como avisar o usuário. Devolve o uri do PDF. */
+-export async function exportReportAsPdf(report: Report): Promise<string | null> {
++/** Gera o PDF do relatório e abre para visualização — não compartilha.
++ * No Android abre o leitor de PDF do aparelho; no iOS (e no Android sem
++ * leitor de PDF) abre a pré-visualização de impressão do sistema. Lança
++ * Error com mensagem legível se algo falhar — quem chama decide como avisar
++ * o usuário. Devolve o uri do PDF (null na web). */
++export async function openReportPdf(report: Report): Promise<string | null> {
+   const images = await loadImages(report);
+   const html = buildReportPdfHtml(report, {
+     images,
+@@ -95,11 +97,11 @@ export async function exportReportAsPdf(report: Report): Promise<string | null>
+   });
+ 
+   // O expo-print grava numa pasta própria (nome = UUID) que, no Android —
+-  // principalmente no Expo Go —, o expo-sharing não tem permissão de ler
++  // principalmente no Expo Go —, os outros módulos não têm permissão de ler
+   // ("Not allowed to read file under given URL"). Por isso o PDF é regravado
+-  // no cache do app, com nome reconhecível: é uma pasta que o expo-sharing
+-  // sempre consegue ler. (Renomear com moveAsync não serve: ele também
+-  // precisa ler a pasta de origem.)
++  // no cache do app, com nome reconhecível (é o nome que o leitor de PDF
++  // mostra). Renomear com moveAsync não serve: ele também precisa ler a
++  // pasta de origem.
+   let uri = tempUri;
+   try {
+     if (!base64) throw new Error('expo-print não devolveu o conteúdo do PDF.');
+@@ -110,16 +112,28 @@ export async function exportReportAsPdf(report: Report): Promise<string | null>
+     uri = target;
+     FileSystem.deleteAsync(tempUri, { idempotent: true }).catch(() => {});
+   } catch {
+-    // Se não conseguir regravar, tenta compartilhar o arquivo original.
++    // Se não conseguir regravar, tenta abrir o arquivo original.
+   }
+ 
+-  if (!(await Sharing.isAvailableAsync())) {
+-    throw new Error('Este dispositivo não permite compartilhar arquivos.');
++  if (Platform.OS === 'android') {
++    try {
++      // O leitor de PDF é outro app, então precisa de uma content:// URI
++      // (FileProvider) com permissão temporária de leitura (flag 1).
++      const contentUri = await FileSystem.getContentUriAsync(uri);
++      await IntentLauncher.startActivityAsync('android.intent.action.VIEW', {
++        data: contentUri,
++        flags: 1, // FLAG_GRANT_READ_URI_PERMISSION
++        type: 'application/pdf',
++      });
++      return uri;
++    } catch {
++      // Sem leitor de PDF instalado (ou falha ao abrir): cai na
++      // pré-visualização de impressão abaixo.
++    }
+   }
+-  await Sharing.shareAsync(uri, {
+-    mimeType: 'application/pdf',
+-    UTI: 'com.adobe.pdf',
+-    dialogTitle: `Exportar "${reportTitle(report)}"`,
+-  });
++
++  // iOS: mostra a pré-visualização do sistema, de onde dá para compartilhar
++  // ou salvar em Arquivos.
++  await Print.printAsync({ uri });
+   return uri;
+ }
+-- 
+2.43.0
+

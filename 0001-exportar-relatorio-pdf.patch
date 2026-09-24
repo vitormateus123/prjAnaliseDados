@@ -1,0 +1,651 @@
+From c01eacb931b6341c8729401b0aeaea225fd16e69 Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.local>
+Date: Thu, 24 Sep 2026 18:42:09 +0000
+Subject: [PATCH] =?UTF-8?q?feat:=20exporta=20relat=C3=B3rio=20extra=C3=ADd?=
+ =?UTF-8?q?o=20como=20PDF=20(Revis=C3=A3o=20e=20Hist=C3=B3rico)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adiciona a exportação de um relatório em PDF A4 com opção de
+compartilhar/salvar pelo menu do sistema.
+
+- utils/reportPdfHtml.ts: monta o HTML do documento (função pura) —
+  cabeçalho (título, tipo, datas, situação, finalidade), resumo da IA,
+  campos extraídos, itens (tabela; bloco por item quando >5 colunas) e
+  capturas originais (fotos, textos digitados). Todo texto é escapado.
+- services/pdf/ReportPdfService.ts: lê as fotos (local ou URL assinada)
+  como base64 (máx. 4, até 8 MB cada), gera o PDF com expo-print,
+  renomeia para relatorio-<titulo>-<data>.pdf e abre expo-sharing.
+  Na web abre o diálogo de impressão.
+- utils/fieldValue.ts: fieldValueToDisplayString (datas DD/MM/AAAA,
+  Sim/Não, decimal com vírgula) para textos legíveis.
+- RevisaoScreen: botão "Exportar PDF" (exporta o que está na tela,
+  inclusive edições ainda não salvas).
+- Historico: ação "PDF" em cada card (barra de ações agora quebra linha
+  em telas estreitas).
+- package.json: expo-print ~57.0.2 e expo-sharing ~57.0.22.
+---
+ package-lock.json                    |  28 ++++
+ package.json                         |   2 +
+ src/screens/Historico.tsx            |  37 ++++-
+ src/screens/RevisaoScreen.tsx        |  44 ++++++
+ src/services/pdf/ReportPdfService.ts | 117 +++++++++++++++
+ src/utils/fieldValue.ts              |  28 +++-
+ src/utils/reportPdfHtml.ts           | 212 +++++++++++++++++++++++++++
+ 7 files changed, 465 insertions(+), 3 deletions(-)
+ create mode 100644 src/services/pdf/ReportPdfService.ts
+ create mode 100644 src/utils/reportPdfHtml.ts
+
+diff --git a/package-lock.json b/package-lock.json
+index 35569a0..02091fd 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -23,6 +23,8 @@
+         "expo-haptics": "~57.0.3",
+         "expo-image-picker": "^57.0.16",
+         "expo-linear-gradient": "~57.0.2",
++        "expo-print": "~57.0.2",
++        "expo-sharing": "~57.0.22",
+         "expo-speech": "^57.0.2",
+         "expo-status-bar": "~57.0.1",
+         "expo-updates": "~57.0.22",
+@@ -3125,6 +3127,16 @@
+         "react-native": "*"
+       }
+     },
++    "node_modules/expo-print": {
++      "version": "57.0.2",
++      "resolved": "https://registry.npmjs.org/expo-print/-/expo-print-57.0.2.tgz",
++      "integrity": "sha512-jEbUqtH59xT42dCrmVVrg9Ct1ofD5GAHdQmUiu0EkHdzvqop7G6dt7rCXpq0iUYbu8ow6HH8yLRPbd3VMdTUug==",
++      "license": "MIT",
++      "peerDependencies": {
++        "expo": "*",
++        "react-native": "*"
++      }
++    },
+     "node_modules/expo-server": {
+       "version": "57.0.3",
+       "resolved": "https://registry.npmjs.org/expo-server/-/expo-server-57.0.3.tgz",
+@@ -3134,6 +3146,22 @@
+         "node": ">=20.16.0"
+       }
+     },
++    "node_modules/expo-sharing": {
++      "version": "57.0.22",
++      "resolved": "https://registry.npmjs.org/expo-sharing/-/expo-sharing-57.0.22.tgz",
++      "integrity": "sha512-IWmiz0Dnjd7ifsZ2Gg5XODxb6DQoJ4/H6FofW9bTL9gDjfX2+va8SV1BYVkFvJ8vKQoKR4HgkMCKDCZlrrbKkg==",
++      "license": "MIT",
++      "dependencies": {
++        "@expo/config-plugins": "^57.0.9",
++        "@expo/config-types": "^57.0.2",
++        "@expo/plist": "^0.8.1"
++      },
++      "peerDependencies": {
++        "expo": "*",
++        "react": "*",
++        "react-native": "*"
++      }
++    },
+     "node_modules/expo-speech": {
+       "version": "57.0.2",
+       "resolved": "https://registry.npmjs.org/expo-speech/-/expo-speech-57.0.2.tgz",
+diff --git a/package.json b/package.json
+index 57f7dd8..9c29162 100644
+--- a/package.json
++++ b/package.json
+@@ -18,6 +18,8 @@
+     "expo-haptics": "~57.0.3",
+     "expo-image-picker": "^57.0.16",
+     "expo-linear-gradient": "~57.0.2",
++    "expo-print": "~57.0.2",
++    "expo-sharing": "~57.0.22",
+     "expo-speech": "^57.0.2",
+     "expo-status-bar": "~57.0.1",
+     "expo-updates": "~57.0.22",
+diff --git a/src/screens/Historico.tsx b/src/screens/Historico.tsx
+index ec0e360..e24af20 100644
+--- a/src/screens/Historico.tsx
++++ b/src/screens/Historico.tsx
+@@ -1,13 +1,14 @@
+ import { useCallback, useEffect, useMemo, useState } from 'react';
+ import {
+   View, Text, TouchableOpacity, SectionList, ActivityIndicator,
+-  StyleSheet, SafeAreaView, TextInput, ScrollView,
++  StyleSheet, SafeAreaView, TextInput, ScrollView, Alert,
+ } from 'react-native';
+ import { useNavigation, useFocusEffect, NavigationProp } from '@react-navigation/native';
+ import { Ionicons } from '@expo/vector-icons';
+ import { StorageService } from '../storage/StorageService';
+ import { fetchRemoteReports } from '../services/api/reports/ReportsService';
+ import { syncReport } from '../services/sync/SyncService';
++import { exportReportAsPdf } from '../services/pdf/ReportPdfService';
+ import { NetworkError, ApiError } from '../services/api/apiClient';
+ import { Report, ReportField, FieldValue } from '../types/reports';
+ import { purposeLabel } from '../constants/extractionPurpose';
+@@ -213,6 +214,7 @@ export default function HistoricoScreen() {
+   const [loading, setLoading] = useState(true);
+   const [refreshing, setRefreshing] = useState(false);
+   const [syncingId, setSyncingId] = useState<string | null>(null);
++  const [exportingId, setExportingId] = useState<string | null>(null);
+   // Antes esse erro era engolido em silêncio e a tela só mostrava o que já
+   // estava local, sem nenhuma pista do porquê os dados do Supabase não
+   // apareciam. Agora fica visível como um aviso no topo da lista.
+@@ -291,6 +293,21 @@ export default function HistoricoScreen() {
+     refreshList();
+   }
+ 
++  async function handleExportPdf(report: Report) {
++    if (exportingId) return;
++    setExportingId(report.id);
++    try {
++      await exportReportAsPdf(report);
++    } catch (err) {
++      Alert.alert(
++        'Não foi possível gerar o PDF',
++        err instanceof Error ? err.message : 'Tente novamente em instantes.',
++      );
++    } finally {
++      setExportingId(null);
++    }
++  }
++
+   async function handleDeleteReport(report: Report) {
+     await StorageService.deleteReport(report.id);
+     refreshList();
+@@ -532,6 +549,22 @@ export default function HistoricoScreen() {
+                   </TouchableOpacity>
+                 )}
+ 
++                <TouchableOpacity
++                  style={local.iconAction}
++                  onPress={() => void handleExportPdf(item)}
++                  activeOpacity={0.7}
++                  disabled={exportingId !== null}
++                >
++                  {exportingId === item.id ? (
++                    <ActivityIndicator size="small" color={colors.primary} />
++                  ) : (
++                    <>
++                      <Ionicons name="document-outline" size={16} color={colors.primary} />
++                      <Text style={[local.iconActionText, { color: colors.primary }]}>PDF</Text>
++                    </>
++                  )}
++                </TouchableOpacity>
++
+                 <TouchableOpacity
+                   style={[local.iconAction, { marginRight: 0 }]}
+                   onPress={() => handleDeleteReport(item)}
+@@ -653,7 +686,7 @@ const local = StyleSheet.create({
+   statusText: { fontSize: 11, fontWeight: '700' },
+   syncError: { fontSize: 12, color: colors.dangerStrong, marginTop: spacing.sm },
+   cardActions: {
+-    flexDirection: 'row', marginTop: spacing.md, paddingTop: spacing.md,
++    flexDirection: 'row', flexWrap: 'wrap', rowGap: spacing.sm, marginTop: spacing.md, paddingTop: spacing.md,
+     borderTopWidth: 1, borderTopColor: colors.border,
+   },
+   iconAction: {
+diff --git a/src/screens/RevisaoScreen.tsx b/src/screens/RevisaoScreen.tsx
+index 24965ff..b1a433f 100644
+--- a/src/screens/RevisaoScreen.tsx
++++ b/src/screens/RevisaoScreen.tsx
+@@ -19,6 +19,7 @@ import { parseFieldValue } from '../utils/fieldValue';
+ import { purposeIcon, purposeLabel } from '../constants/extractionPurpose';
+ import { refineFields, toRefineTargetFields, RefineTargetField } from '../services/api/ai/RefineService';
+ import { summarizeReport } from '../services/api/ai/SummaryService';
++import { exportReportAsPdf } from '../services/pdf/ReportPdfService';
+ import { colors, radius, shadows, spacing } from '../theme';
+ 
+ function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
+@@ -42,6 +43,7 @@ export function RevisaoScreen() {
+   const [report, setReport] = useState<Report | null>(null);
+   const [loading, setLoading] = useState(true);
+   const [saving, setSaving] = useState(false);
++  const [exportingPdf, setExportingPdf] = useState(false);
+ 
+   // Snapshot dos campos/itens tal como carregados, pra saber em handleSave
+   // se algo mudou desde então — só vale a pena chamar a IA de novo pro
+@@ -372,6 +374,25 @@ export function RevisaoScreen() {
+     }
+   }
+ 
++  // ─── exportar PDF ─────────────────────────────────────────────────────────
++
++  /** Exporta o que está na tela agora (inclui edições ainda não salvas) —
++   * não depende de salvar antes. */
++  async function handleExportPdf() {
++    if (!report || exportingPdf) return;
++    setExportingPdf(true);
++    try {
++      await exportReportAsPdf(report);
++    } catch (err) {
++      Alert.alert(
++        'Não foi possível gerar o PDF',
++        err instanceof Error ? err.message : 'Tente novamente em instantes.',
++      );
++    } finally {
++      setExportingPdf(false);
++    }
++  }
++
+   // ─── render ───────────────────────────────────────────────────────────────
+ 
+   const hasCaptures = report.captures.length > 0;
+@@ -504,6 +525,22 @@ export function RevisaoScreen() {
+             <ItemsList items={report.items} onChange={handleItemsChange} />
+           )}
+ 
++          <TouchableOpacity
++            style={[styles.exportButton, (isRefining || exportingPdf) && styles.buttonDisabled]}
++            onPress={() => void handleExportPdf()}
++            activeOpacity={0.85}
++            disabled={isRefining || exportingPdf}
++          >
++            {exportingPdf ? (
++              <ActivityIndicator size="small" color={colors.primary} />
++            ) : (
++              <Ionicons name="document-outline" size={20} color={colors.primary} />
++            )}
++            <Text style={styles.exportButtonText}>
++              {exportingPdf ? 'Gerando PDF…' : 'Exportar PDF'}
++            </Text>
++          </TouchableOpacity>
++
+           <TouchableOpacity
+             style={[styles.button, isRefining && styles.buttonDisabled]}
+             onPress={handleSave}
+@@ -600,5 +637,12 @@ const styles = StyleSheet.create({
+     ...shadows.md,
+   },
+   buttonDisabled: { opacity: 0.6 },
++  exportButton: {
++    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
++    backgroundColor: colors.surface, paddingVertical: spacing.md,
++    borderRadius: radius.lg, marginTop: spacing.md,
++    borderWidth: 1.5, borderColor: colors.primary,
++  },
++  exportButtonText: { color: colors.primary, fontSize: 15, fontWeight: '700' },
+   buttonText: { color: colors.textOnPrimary, fontSize: 16, fontWeight: '700' },
+ });
+\ No newline at end of file
+diff --git a/src/services/pdf/ReportPdfService.ts b/src/services/pdf/ReportPdfService.ts
+new file mode 100644
+index 0000000..5638aed
+--- /dev/null
++++ b/src/services/pdf/ReportPdfService.ts
+@@ -0,0 +1,117 @@
++// src/services/pdf/ReportPdfService.ts
++// Exporta um Report como PDF (expo-print) e abre o menu de compartilhar do
++// sistema (expo-sharing). Todo o texto do documento vem de
++// utils/reportPdfHtml.ts — aqui fica só o I/O: ler as fotos, gerar o
++// arquivo, renomear e compartilhar.
++import { Platform } from 'react-native';
++import * as Print from 'expo-print';
++import * as Sharing from 'expo-sharing';
++import * as FileSystem from 'expo-file-system/legacy';
++import { Capture, Report } from '../../types/reports';
++import { buildReportPdfHtml, reportPdfFileName, reportTitle } from '../../utils/reportPdfHtml';
++
++// A4 em pontos (72 dpi) — o padrão do expo-print é US Letter.
++const A4_WIDTH = 595;
++const A4_HEIGHT = 842;
++const PAGE_MARGIN = 32;
++
++// O HTML carrega as fotos em base64 dentro da string — limitar quantidade e
++// tamanho evita estourar memória do WebView de impressão em relatórios com
++// muitas capturas. O que passa do limite simplesmente não entra no PDF.
++const MAX_EMBEDDED_IMAGES = 4;
++const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
++
++async function readCaptureAsDataUri(capture: Capture): Promise<string | null> {
++  const mime = capture.mime_type?.startsWith('image/') ? capture.mime_type : 'image/jpeg';
++  let path = capture.local_path;
++  let downloaded = false;
++
++  try {
++    if (path) {
++      const info = await FileSystem.getInfoAsync(path);
++      if (!info.exists) path = undefined;
++    }
++
++    // Captura já sincronizada e sem arquivo local (ex: relatório vindo do
++    // servidor): baixa a URL assinada pro cache só pra embutir no PDF.
++    if (!path && capture.file_url) {
++      const target = `${FileSystem.cacheDirectory}pdf-capture-${capture.id}`;
++      const result = await FileSystem.downloadAsync(capture.file_url, target);
++      if (result.status !== 200) return null;
++      path = result.uri;
++      downloaded = true;
++    }
++    if (!path) return null;
++
++    const info = await FileSystem.getInfoAsync(path);
++    if (!info.exists || (info.size ?? 0) > MAX_IMAGE_BYTES) return null;
++
++    const base64 = await FileSystem.readAsStringAsync(path, {
++      encoding: FileSystem.EncodingType.Base64,
++    });
++    return `data:${mime};base64,${base64}`;
++  } catch {
++    // Foto ilegível não deve impedir o PDF — ele sai sem essa imagem.
++    return null;
++  } finally {
++    if (downloaded && path) FileSystem.deleteAsync(path, { idempotent: true }).catch(() => {});
++  }
++}
++
++async function loadImages(report: Report): Promise<Record<string, string>> {
++  const photos = report.captures.filter((c) => c.type === 'photo').slice(0, MAX_EMBEDDED_IMAGES);
++  const entries = await Promise.all(
++    photos.map(async (c) => [c.id, await readCaptureAsDataUri(c)] as const),
++  );
++  const images: Record<string, string> = {};
++  for (const [id, uri] of entries) if (uri) images[id] = uri;
++  return images;
++}
++
++/** Gera o PDF do relatório e abre o compartilhar do sistema (salvar em
++ * Arquivos, WhatsApp, e-mail...). Lança Error com mensagem legível se algo
++ * falhar — quem chama decide como avisar o usuário. Devolve o uri do PDF. */
++export async function exportReportAsPdf(report: Report): Promise<string | null> {
++  const images = await loadImages(report);
++  const html = buildReportPdfHtml(report, {
++    images,
++    // Android aplica margem via @page; iOS via `margins` do expo-print.
++    pageMarginPx: Platform.OS === 'android' ? PAGE_MARGIN : 0,
++  });
++
++  // Web: não há arquivo/compartilhar — abre o diálogo de impressão, de onde
++  // dá pra "Salvar como PDF".
++  if (Platform.OS === 'web') {
++    await Print.printAsync({ html });
++    return null;
++  }
++
++  const { uri: tempUri } = await Print.printToFileAsync({
++    html,
++    width: A4_WIDTH,
++    height: A4_HEIGHT,
++    margins: { top: PAGE_MARGIN, right: PAGE_MARGIN, bottom: PAGE_MARGIN, left: PAGE_MARGIN },
++  });
++
++  // O expo-print nomeia o arquivo com um UUID; renomeia pra o que a pessoa
++  // vê no menu de compartilhar / ao salvar ser reconhecível.
++  let uri = tempUri;
++  try {
++    const target = `${FileSystem.cacheDirectory}${reportPdfFileName(report)}`;
++    await FileSystem.deleteAsync(target, { idempotent: true });
++    await FileSystem.moveAsync({ from: tempUri, to: target });
++    uri = target;
++  } catch {
++    // Se renomear falhar, compartilha com o nome original mesmo.
++  }
++
++  if (!(await Sharing.isAvailableAsync())) {
++    throw new Error('Este dispositivo não permite compartilhar arquivos.');
++  }
++  await Sharing.shareAsync(uri, {
++    mimeType: 'application/pdf',
++    UTI: 'com.adobe.pdf',
++    dialogTitle: `Exportar "${reportTitle(report)}"`,
++  });
++  return uri;
++}
+diff --git a/src/utils/fieldValue.ts b/src/utils/fieldValue.ts
+index 2abd9dd..e2cb852 100644
+--- a/src/utils/fieldValue.ts
++++ b/src/utils/fieldValue.ts
+@@ -81,4 +81,30 @@ export function fieldValueToString(fv: FieldValue): string {
+     case 'multiselect':
+       return fv.value.join(', ');
+   }
+-}
+\ No newline at end of file
++}
++
++// Converte um FieldValue para texto legível por pessoas (relatório em PDF,
++// compartilhamento) — diferente de fieldValueToString, que devolve o formato
++// editável de um TextInput ('sim'/'não', data ISO). Aqui: datas DD/MM/AAAA,
++// booleanos "Sim"/"Não", decimais com vírgula. Devolve '' quando vazio.
++export function fieldValueToDisplayString(fv: FieldValue): string {
++  switch (fv.type) {
++    case 'text':
++    case 'long_text':
++    case 'select':
++      return (fv.value ?? '').trim();
++    case 'number':
++      return fv.value == null ? '' : String(fv.value);
++    case 'decimal':
++      return fv.value == null ? '' : String(fv.value).replace('.', ',');
++    case 'date': {
++      if (!fv.value) return '';
++      const [y, m, d] = fv.value.split('-');
++      return y && m && d ? `${d}/${m}/${y}` : fv.value;
++    }
++    case 'boolean':
++      return fv.value == null ? '' : fv.value ? 'Sim' : 'Não';
++    case 'multiselect':
++      return fv.value.join(', ');
++  }
++}
+diff --git a/src/utils/reportPdfHtml.ts b/src/utils/reportPdfHtml.ts
+new file mode 100644
+index 0000000..be6f702
+--- /dev/null
++++ b/src/utils/reportPdfHtml.ts
+@@ -0,0 +1,212 @@
++// src/utils/reportPdfHtml.ts
++// Monta o HTML (A4, estilos inline) que o expo-print transforma em PDF.
++// Função pura — sem expo/react-native — pra ficar fácil de testar e pra que
++// o I/O (ler fotos, gerar arquivo, compartilhar) fique todo em
++// services/pdf/ReportPdfService.ts.
++import { Capture, Report, ReportField, ReportItem } from '../types/reports';
++import { purposeLabel } from '../constants/extractionPurpose';
++import { fieldValueToDisplayString } from './fieldValue';
++
++export interface ReportPdfHtmlOptions {
++  /** Fotos já lidas como data URI (`data:image/jpeg;base64,...`), por Capture.id. */
++  images?: Record<string, string>;
++  /** Margem da página em px, aplicada via @page. No iOS a margem vem da
++   * opção `margins` do expo-print, então lá deve ser 0 (evita margem dupla). */
++  pageMarginPx?: number;
++  /** Momento de geração exibido no rodapé (injetável pra teste). */
++  generatedAt?: Date;
++}
++
++const STATUS_LABEL: Record<Report['status'], string> = {
++  draft: 'Rascunho',
++  pending_sync: 'Pendente de sincronização',
++  synced: 'Sincronizado',
++  error: 'Erro de sincronização',
++};
++
++// Acima disso os itens deixam de caber lado a lado numa tabela A4 legível e
++// passam a ser exibidos como um bloco (campo/valor) por item.
++const MAX_ITEM_TABLE_COLUMNS = 5;
++
++const EMPTY = '<span class="empty">—</span>';
++
++export function escapeHtml(text: string): string {
++  return text
++    .replace(/&/g, '&amp;')
++    .replace(/</g, '&lt;')
++    .replace(/>/g, '&gt;')
++    .replace(/"/g, '&quot;')
++    .replace(/'/g, '&#39;');
++}
++
++export function reportTitle(report: Report): string {
++  return report.context_label || report.form_template_name || 'Relatório';
++}
++
++/** Nome de arquivo seguro: `relatorio-nota-fiscal-2026-09-24.pdf`. */
++export function reportPdfFileName(report: Report): string {
++  const slug = (report.context_label || report.form_template_name || '')
++    .toLowerCase()
++    .normalize('NFD')
++    .replace(/[\u0300-\u036f]/g, '')
++    .replace(/[^a-z0-9]+/g, '-')
++    .replace(/^-+|-+$/g, '')
++    .slice(0, 40);
++  const date = new Date(report.created_at);
++  const day = Number.isNaN(date.getTime()) ? '' : date.toISOString().slice(0, 10);
++  return ['relatorio', slug, day].filter(Boolean).join('-') + '.pdf';
++}
++
++function pad(n: number): string {
++  return String(n).padStart(2, '0');
++}
++
++function formatDateTime(iso: string | Date): string {
++  const d = typeof iso === 'string' ? new Date(iso) : iso;
++  if (Number.isNaN(d.getTime())) return '';
++  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
++}
++
++function valueHtml(field: ReportField): string {
++  const text = fieldValueToDisplayString(field.field_value);
++  return text ? escapeHtml(text) : EMPTY;
++}
++
++function metaLine(label: string, value: string | null | undefined): string {
++  return value ? `<div><span class="meta-label">${escapeHtml(label)}:</span> ${escapeHtml(value)}</div>` : '';
++}
++
++function fieldsTable(fields: ReportField[]): string {
++  const rows = fields
++    .map((f) => `<tr><th>${escapeHtml(f.label)}</th><td>${valueHtml(f)}</td></tr>`)
++    .join('');
++  return `<table class="kv">${rows}</table>`;
++}
++
++function itemsSection(items: ReportItem[]): string {
++  // Colunas = união das keys de todos os itens, na ordem em que aparecem.
++  const columns: { key: string; label: string }[] = [];
++  for (const item of items) {
++    for (const f of item.fields) {
++      if (!columns.some((c) => c.key === f.key)) columns.push({ key: f.key, label: f.label });
++    }
++  }
++
++  const title = `<h2>Itens (${items.length})</h2>`;
++
++  if (columns.length <= MAX_ITEM_TABLE_COLUMNS) {
++    const head = `<tr><th class="idx">#</th>${columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join('')}</tr>`;
++    const body = items
++      .map((item, i) => {
++        const cells = columns
++          .map((c) => {
++            const f = item.fields.find((x) => x.key === c.key);
++            return `<td>${f ? valueHtml(f) : EMPTY}</td>`;
++          })
++          .join('');
++        return `<tr><td class="idx">${i + 1}</td>${cells}</tr>`;
++      })
++      .join('');
++    return `${title}<table class="grid"><thead>${head}</thead><tbody>${body}</tbody></table>`;
++  }
++
++  const blocks = items
++    .map((item, i) => `<div class="item"><h3>Item ${i + 1}</h3>${fieldsTable(item.fields)}</div>`)
++    .join('');
++  return `${title}${blocks}`;
++}
++
++function capturesSection(captures: Capture[], images: Record<string, string>): string {
++  const parts: string[] = [];
++  let voiceCount = 0;
++
++  for (const c of captures) {
++    if (c.type === 'photo' && images[c.id]) {
++      parts.push(`<figure><img src="${images[c.id]}" /></figure>`);
++    } else if (c.type === 'text' && c.text_content?.trim()) {
++      parts.push(`<blockquote>${escapeHtml(c.text_content.trim())}</blockquote>`);
++    } else if (c.type === 'voice') {
++      voiceCount++;
++    }
++  }
++  if (voiceCount > 0) {
++    parts.push(
++      `<p class="note">${voiceCount === 1 ? '1 gravação de áudio' : `${voiceCount} gravações de áudio`} usada${voiceCount === 1 ? '' : 's'} na extração (não incluída${voiceCount === 1 ? '' : 's'} no PDF).</p>`,
++    );
++  }
++  return parts.length > 0 ? `<h2>Capturas originais</h2>${parts.join('')}` : '';
++}
++
++export function buildReportPdfHtml(report: Report, options: ReportPdfHtmlOptions = {}): string {
++  const { images = {}, pageMarginPx = 0, generatedAt = new Date() } = options;
++
++  const purpose = purposeLabel(report.extraction_purpose);
++  const purposeText = purpose
++    ? report.extraction_custom_instruction ? `${purpose} — ${report.extraction_custom_instruction}` : purpose
++    : null;
++  const templateName =
++    report.form_template_name && report.form_template_name !== reportTitle(report)
++      ? report.form_template_name
++      : null;
++
++  const summary = report.ai_summary?.trim()
++    ? `<div class="summary">${escapeHtml(report.ai_summary.trim())}</div>`
++    : '';
++  const fields = report.fields.length > 0 ? `<h2>Informações extraídas</h2>${fieldsTable(report.fields)}` : '';
++  const items = report.items.length > 0 ? itemsSection(report.items) : '';
++  const captures = capturesSection(report.captures, images);
++  const hasContent = Boolean(fields || items);
++
++  return `<!DOCTYPE html>
++<html lang="pt-BR">
++<head>
++<meta charset="utf-8" />
++<meta name="viewport" content="width=device-width, initial-scale=1.0" />
++<title>${escapeHtml(reportTitle(report))}</title>
++<style>
++  @page { margin: ${pageMarginPx}px; }
++  * { box-sizing: border-box; }
++  body { font-family: -apple-system, 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 12px; line-height: 1.45; color: #161827; margin: 0; padding: 0; }
++  .eyebrow { font-size: 10px; font-weight: 800; letter-spacing: 1.2px; color: #4f46e5; }
++  h1 { font-size: 22px; margin: 2px 0 6px; letter-spacing: -0.3px; }
++  h2 { font-size: 13px; margin: 22px 0 8px; padding-bottom: 4px; border-bottom: 2px solid #4f46e5; color: #3730a3; text-transform: uppercase; letter-spacing: 0.6px; }
++  h3 { font-size: 12px; margin: 0 0 4px; color: #5c6079; }
++  .meta { color: #5c6079; font-size: 11px; }
++  .meta-label { font-weight: 700; color: #161827; }
++  .summary { margin-top: 14px; padding: 10px 12px; background: #eef0ff; border-left: 3px solid #4f46e5; border-radius: 4px; }
++  table { width: 100%; border-collapse: collapse; }
++  tr { page-break-inside: avoid; }
++  table.kv th { width: 34%; text-align: left; vertical-align: top; font-weight: 700; padding: 6px 8px; background: #f8f9fd; border: 1px solid #e6e8f4; }
++  table.kv td { vertical-align: top; padding: 6px 8px; border: 1px solid #e6e8f4; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
++  table.grid th { text-align: left; padding: 6px 8px; background: #eef0ff; border: 1px solid #d7daf0; font-size: 11px; }
++  table.grid td { vertical-align: top; padding: 6px 8px; border: 1px solid #e6e8f4; word-wrap: break-word; overflow-wrap: anywhere; }
++  table.grid tbody tr:nth-child(even) td { background: #f8f9fd; }
++  .idx { width: 28px; text-align: center; color: #5c6079; }
++  .item { margin-bottom: 12px; page-break-inside: avoid; }
++  .empty { color: #9599b3; }
++  figure { margin: 0 0 12px; text-align: center; page-break-inside: avoid; }
++  figure img { max-width: 100%; max-height: 420px; border: 1px solid #e6e8f4; border-radius: 4px; }
++  blockquote { margin: 0 0 12px; padding: 8px 12px; background: #f8f9fd; border-left: 3px solid #d7daf0; white-space: pre-wrap; overflow-wrap: anywhere; }
++  .note { color: #5c6079; font-style: italic; margin: 6px 0; }
++  .footer { margin-top: 28px; padding-top: 8px; border-top: 1px solid #e6e8f4; font-size: 10px; color: #9599b3; }
++</style>
++</head>
++<body>
++  <div class="eyebrow">RELATÓRIO</div>
++  <h1>${escapeHtml(reportTitle(report))}</h1>
++  <div class="meta">
++    ${metaLine('Tipo', templateName)}
++    ${metaLine('Criado em', formatDateTime(report.created_at))}
++    ${metaLine('Atualizado em', report.updated_at !== report.created_at ? formatDateTime(report.updated_at) : null)}
++    ${metaLine('Situação', STATUS_LABEL[report.status])}
++    ${metaLine('Finalidade', purposeText)}
++  </div>
++  ${summary}
++  ${fields}
++  ${items}
++  ${hasContent ? '' : '<p class="note">Nenhuma informação foi extraída para este relatório.</p>'}
++  ${captures}
++  <div class="footer">Gerado em ${formatDateTime(generatedAt)} · Campo — Análise de Dados</div>
++</body>
++</html>`;
++}
+-- 
+2.43.0
+

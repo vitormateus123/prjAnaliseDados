@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TouchableOpacity, SectionList, ActivityIndicator,
-  StyleSheet, SafeAreaView, TextInput, ScrollView,
+  StyleSheet, SafeAreaView, TextInput, ScrollView, Alert,
 } from 'react-native';
 import { useNavigation, useFocusEffect, NavigationProp } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService } from '../storage/StorageService';
 import { fetchRemoteReports } from '../services/api/reports/ReportsService';
 import { syncReport } from '../services/sync/SyncService';
+import { openReportPdf } from '../services/pdf/ReportPdfService';
 import { NetworkError, ApiError } from '../services/api/apiClient';
 import { Report, ReportField, FieldValue } from '../types/reports';
 import { purposeLabel } from '../constants/extractionPurpose';
@@ -213,6 +214,7 @@ export default function HistoricoScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [exportingId, setExportingId] = useState<string | null>(null);
   // Antes esse erro era engolido em silêncio e a tela só mostrava o que já
   // estava local, sem nenhuma pista do porquê os dados do Supabase não
   // apareciam. Agora fica visível como um aviso no topo da lista.
@@ -289,6 +291,21 @@ export default function HistoricoScreen() {
     await syncReport(report);
     setSyncingId(null);
     refreshList();
+  }
+
+  async function handleExportPdf(report: Report) {
+    if (exportingId) return;
+    setExportingId(report.id);
+    try {
+      await openReportPdf(report);
+    } catch (err) {
+      Alert.alert(
+        'Não foi possível gerar o PDF',
+        err instanceof Error ? err.message : 'Tente novamente em instantes.',
+      );
+    } finally {
+      setExportingId(null);
+    }
   }
 
   async function handleDeleteReport(report: Report) {
@@ -533,6 +550,22 @@ export default function HistoricoScreen() {
                 )}
 
                 <TouchableOpacity
+                  style={local.iconAction}
+                  onPress={() => void handleExportPdf(item)}
+                  activeOpacity={0.7}
+                  disabled={exportingId !== null}
+                >
+                  {exportingId === item.id ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <>
+                      <Ionicons name="document-outline" size={16} color={colors.primary} />
+                      <Text style={[local.iconActionText, { color: colors.primary }]}>PDF</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+
+                <TouchableOpacity
                   style={[local.iconAction, { marginRight: 0 }]}
                   onPress={() => handleDeleteReport(item)}
                   activeOpacity={0.7}
@@ -653,7 +686,7 @@ const local = StyleSheet.create({
   statusText: { fontSize: 11, fontWeight: '700' },
   syncError: { fontSize: 12, color: colors.dangerStrong, marginTop: spacing.sm },
   cardActions: {
-    flexDirection: 'row', marginTop: spacing.md, paddingTop: spacing.md,
+    flexDirection: 'row', flexWrap: 'wrap', rowGap: spacing.sm, marginTop: spacing.md, paddingTop: spacing.md,
     borderTopWidth: 1, borderTopColor: colors.border,
   },
   iconAction: {
