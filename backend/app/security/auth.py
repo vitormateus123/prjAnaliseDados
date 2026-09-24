@@ -84,7 +84,11 @@ async def authenticate_request(request: Request) -> None:
             .maybe_single()
             .execute()
         )
-        profile = profile_response.data
+        # Nesta versao do postgrest-py, maybe_single().execute() retorna
+        # None (nao um objeto com .data = None) quando 0 linhas batem —
+        # acontece quando o usuario autenticado no Supabase Auth ainda nao
+        # tem uma linha correspondente em public.users.
+        profile = profile_response.data if profile_response is not None else None
         if not profile:
             raise HTTPException(status_code=403, detail="Usuário sem perfil autorizado.")
         if profile.get("role") not in {"admin", "field_agent", "viewer"}:
