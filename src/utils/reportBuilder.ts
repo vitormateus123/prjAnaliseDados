@@ -5,7 +5,7 @@
 // duplicar essa lógica nos dois lugares.
 import * as Crypto from 'expo-crypto';
 import { FormField } from '../types/forms';
-import { DynamicExtractedField, ReportField, ReportItem } from '../types/reports';
+import { Capture, DynamicExtractedField, ReportField, ReportItem } from '../types/reports';
 import { emptyFieldValue, parseFieldValue } from './fieldValue';
 
 interface ExtractedFieldLike {
@@ -94,4 +94,16 @@ export function buildDynamicReportItems(
     id: Crypto.randomUUID(),
     fields: buildDynamicReportFields(it.fields),
   }));
+}
+
+// ─── transcrição de áudio ─────────────────────────────────────────────────
+// A extração (classica ou automática) devolve a transcrição do Whisper
+// junto do resultado (ExtractionResult.transcript / AutoExtractionResult.
+// transcript) — essa função anexa esse texto à capture de voz do conjunto,
+// pra ela viajar junto do relatório (persistida e depois sincronizada) e
+// aparecer na Revisão ao lado do player de áudio. Não faz nada se não
+// houver transcript ou nenhuma capture de voz no conjunto.
+export function attachTranscript(captures: Capture[], transcript?: string | null): Capture[] {
+  if (!transcript) return captures;
+  return captures.map((c) => (c.type === 'voice' ? { ...c, transcript } : c));
 }

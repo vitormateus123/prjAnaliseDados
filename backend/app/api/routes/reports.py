@@ -241,6 +241,7 @@ def _row_to_report_out(row: dict, url_map: dict[str, str]) -> ReportOut:
             mime_type=c.get("mime_type"),
             created_at=c["created_at"],
             text_content=c.get("text_content"),
+            transcript=c.get("transcript"),
         )
         for c in row.get("captures") or []
     ]
@@ -392,6 +393,7 @@ def create_report(report: ReportIn):
                     "file_url": file_url,
                     "mime_type": c.mime_type,
                     "text_content": c.text_content,
+                    "transcript": c.transcript,
                 })
                 synced_captures.append(SyncedCaptureRef(id=c.id, file_url=file_url))
             supabase.table("captures").upsert(capture_rows, on_conflict="id").execute()

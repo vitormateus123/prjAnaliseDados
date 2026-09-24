@@ -19,6 +19,8 @@ interface BackendExtractResponse {
   provider: string;
   model: string;
   error?: string;
+  // Transcrição do áudio (só quando media_type='voice') — ver ExtractResponse.
+  transcript?: string | null;
 }
 
 export async function extractFields(
@@ -58,6 +60,7 @@ export async function extractFields(
       error: result.error,
       provider: result.provider,
       model: result.model,
+      transcript: result.transcript ?? null,
     };
   } catch (error) {
     return {

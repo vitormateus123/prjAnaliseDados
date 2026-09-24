@@ -52,6 +52,10 @@ class ExtractResponse(BaseModel):
     # true = vale a pena chamar de novo (ex: sobrecarga momentânea do
     # provedor de IA); false = erro que tentar de novo não resolve sozinho.
     retryable: bool = False
+    # Transcrição do áudio (Whisper via Groq), só quando media_type='voice'
+    # e a extração teve sucesso — ver POST /extract/. O app guarda isso
+    # junto da capture de voz (Capture.transcript) pra exibir na Revisão.
+    transcript: str | None = None
 
 
 # ─── catálogo enviado à IA para classificação ──────────────────────────────
@@ -180,6 +184,11 @@ class AutoExtractResponse(BaseModel):
     model: str
     error: str | None = None
     retryable: bool = False
+
+    # Transcrição do áudio (Whisper via Groq), só quando a captura incluiu
+    # voz e a classificação/extração teve sucesso — ver POST /extract/auto.
+    # O app guarda isso na capture de voz correspondente (Capture.transcript).
+    transcript: str | None = None
 
 
 # ─── refinamento: re-extração de campos específicos ──────────────────────────

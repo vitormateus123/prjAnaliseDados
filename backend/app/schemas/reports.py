@@ -28,6 +28,10 @@ class CaptureIn(BaseModel):
     # Texto digitado (captures do tipo 'text') — persistido direto, sem
     # upload. Ver migration 0010.
     text_content: Optional[str] = None
+    # Transcricao automatica do audio (captures do tipo 'voice'), gerada na
+    # extracao e devolvida ao app junto do resultado — persistida direto,
+    # igual text_content. Ver migration 0012.
+    transcript: Optional[str] = None
     # Conteudo do arquivo (foto/audio) em base64 — so viaja nesta requisicao
     # (o app le o arquivo local antes de sincronizar); nunca fica salvo em
     # texto puro em lugar nenhum. Presente => o backend faz upload pro
@@ -83,6 +87,7 @@ class CaptureOut(BaseModel):
     mime_type: Optional[str] = None
     created_at: str
     text_content: Optional[str] = None
+    transcript: Optional[str] = None
 
 
 class ReportItemOut(BaseModel):

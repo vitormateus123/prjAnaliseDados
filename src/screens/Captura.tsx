@@ -33,6 +33,7 @@ import { fetchFormTemplateById } from '../services/api/forms/TemplatesService';
 import { FormTemplate } from '../types/forms';
 import { AutoExtractionResult, Capture, ExtractionPurpose, Report, ReportField, ReportItem } from '../types/reports';
 import {
+  attachTranscript,
   buildDynamicReportFields,
   buildDynamicReportItems,
   buildReportFields,
@@ -347,9 +348,17 @@ export default function CapturaScreen() {
         ? [emptyReportItem(itemTemplateFields)]
         : [];
 
+      // Mesmo quando a extração dos campos falha, o Whisper pode já ter
+      // transcrito o áudio com sucesso — vale a pena guardar mesmo assim
+      // (ver ExtractResponse no backend).
+      const capturesWithTranscript = attachTranscript(
+        [capture],
+        result.transcript,
+      );
+
       await persistReport(
         activeTemplate,
-        [capture],
+        capturesWithTranscript,
         buildReportFields(
           flatTemplateFields,
           result.success
@@ -489,6 +498,14 @@ export default function CapturaScreen() {
       return;
     }
 
+    // A partir daqui a extração teve sucesso — se a captura combinava um
+    // áudio, o Whisper já transcreveu; anexa o texto à capture de voz para
+    // ela viajar junto do relatório (ver attachTranscript).
+    const capturesWithTranscript = attachTranscript(
+      captures,
+      auto.transcript,
+    );
+
     // ─── sem template: a IA estruturou os campos/itens diretamente ───────
     if (auto.structure_mode === 'dynamic') {
       const flatFields =
@@ -506,7 +523,7 @@ export default function CapturaScreen() {
         items.length === 0
       ) {
         finishFailureAlert(
-          captures,
+          capturesWithTranscript,
           retry,
         );
 
@@ -519,7 +536,7 @@ export default function CapturaScreen() {
       );
 
       await persistDynamicReport(
-        captures,
+        capturesWithTranscript,
         auto,
         flatFields,
         items,
@@ -531,7 +548,7 @@ export default function CapturaScreen() {
     // ─── formulário reaproveitado do catálogo ─────────────────────────────
     if (!auto.template_id) {
       finishFailureAlert(
-        captures,
+        capturesWithTranscript,
         retry,
       );
 
@@ -589,7 +606,7 @@ export default function CapturaScreen() {
 
     await persistReport(
       resolvedTemplate,
-      captures,
+      capturesWithTranscript,
       flatFields,
       items,
       false,
