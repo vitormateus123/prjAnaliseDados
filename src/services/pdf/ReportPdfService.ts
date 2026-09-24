@@ -86,23 +86,31 @@ export async function exportReportAsPdf(report: Report): Promise<string | null> 
     return null;
   }
 
-  const { uri: tempUri } = await Print.printToFileAsync({
+  const { uri: tempUri, base64 } = await Print.printToFileAsync({
     html,
     width: A4_WIDTH,
     height: A4_HEIGHT,
     margins: { top: PAGE_MARGIN, right: PAGE_MARGIN, bottom: PAGE_MARGIN, left: PAGE_MARGIN },
+    base64: true,
   });
 
-  // O expo-print nomeia o arquivo com um UUID; renomeia pra o que a pessoa
-  // vê no menu de compartilhar / ao salvar ser reconhecível.
+  // O expo-print grava numa pasta própria (nome = UUID) que, no Android —
+  // principalmente no Expo Go —, o expo-sharing não tem permissão de ler
+  // ("Not allowed to read file under given URL"). Por isso o PDF é regravado
+  // no cache do app, com nome reconhecível: é uma pasta que o expo-sharing
+  // sempre consegue ler. (Renomear com moveAsync não serve: ele também
+  // precisa ler a pasta de origem.)
   let uri = tempUri;
   try {
+    if (!base64) throw new Error('expo-print não devolveu o conteúdo do PDF.');
     const target = `${FileSystem.cacheDirectory}${reportPdfFileName(report)}`;
-    await FileSystem.deleteAsync(target, { idempotent: true });
-    await FileSystem.moveAsync({ from: tempUri, to: target });
+    await FileSystem.writeAsStringAsync(target, base64, {
+      encoding: FileSystem.EncodingType.Base64,
+    });
     uri = target;
+    FileSystem.deleteAsync(tempUri, { idempotent: true }).catch(() => {});
   } catch {
-    // Se renomear falhar, compartilha com o nome original mesmo.
+    // Se não conseguir regravar, tenta compartilhar o arquivo original.
   }
 
   if (!(await Sharing.isAvailableAsync())) {
