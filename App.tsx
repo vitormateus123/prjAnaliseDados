@@ -21,6 +21,7 @@ import { TemplatesRevisaoScreen } from './src/screens/TemplatesRevisao';
 import { GerenciarFormulariosScreen } from './src/screens/GerenciarFormularios';
 import { startAutoSync } from './src/services/sync/SyncService';
 import { supabase } from './src/services/auth/supabaseClient';
+import { warmUpBackend } from './src/services/api/apiClient';
 import { colors } from './src/theme';
 
 export type MainTabParamList = {
@@ -161,6 +162,11 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
 
   useEffect(() => {
+    // Dispara assim que o app abre, antes mesmo de saber se ja tem sessao —
+    // o objetivo e o backend (Render) comecar a acordar do cold start o
+    // quanto antes, em paralelo com a checagem de sessao abaixo.
+    warmUpBackend();
+
     let mounted = true;
 
     supabase.auth.getSession().then(({ data }) => {

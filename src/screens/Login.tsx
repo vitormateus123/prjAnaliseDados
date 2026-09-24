@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../services/auth/supabaseClient';
+import { warmUpBackend } from '../services/api/apiClient';
 import { colors, radius, shadows, spacing } from '../theme';
 
 export default function LoginScreen() {
@@ -29,6 +30,11 @@ export default function LoginScreen() {
 
     setLoading(true);
     setErrorMessage(null);
+
+    // Reforça o "acordar" do backend no exato momento do login — se o app
+    // ficou um tempo parado nesta tela, o Render pode ter hibernado de novo
+    // desde o warm-up disparado na abertura do app.
+    warmUpBackend();
 
     try {
       const { error } = await supabase.auth.signInWithPassword({

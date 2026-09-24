@@ -146,6 +146,15 @@ export async function apiUpload<T>(path: string, formData: FormData): Promise<T>
   return response.json() as Promise<T>;
 }
 
+export function warmUpBackend(): void {
+  // Fire-and-forget: no plano free do Render, o backend "hiberna" apos um
+  // tempo sem uso e a primeira requisicao real demora bem mais (cold start).
+  // Chamar /health assim que o app abre comeca esse boot em paralelo, antes
+  // de qualquer tela precisar de dados de verdade — nao aguarda a resposta
+  // nem trata erro, pois nao bloqueia nada: e so um empurrao antecipado.
+  fetch(`${BASE_URL}/health`).catch(() => {});
+}
+
 export async function checkHealth(): Promise<boolean> {
   try {
     // Health is intentionally public on the backend, but this helper is only
