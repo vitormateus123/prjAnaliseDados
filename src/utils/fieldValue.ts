@@ -82,3 +82,29 @@ export function fieldValueToString(fv: FieldValue): string {
       return fv.value.join(', ');
   }
 }
+
+// Converte um FieldValue para texto legível por pessoas (relatório em PDF,
+// compartilhamento) — diferente de fieldValueToString, que devolve o formato
+// editável de um TextInput ('sim'/'não', data ISO). Aqui: datas DD/MM/AAAA,
+// booleanos "Sim"/"Não", decimais com vírgula. Devolve '' quando vazio.
+export function fieldValueToDisplayString(fv: FieldValue): string {
+  switch (fv.type) {
+    case 'text':
+    case 'long_text':
+    case 'select':
+      return (fv.value ?? '').trim();
+    case 'number':
+      return fv.value == null ? '' : String(fv.value);
+    case 'decimal':
+      return fv.value == null ? '' : String(fv.value).replace('.', ',');
+    case 'date': {
+      if (!fv.value) return '';
+      const [y, m, d] = fv.value.split('-');
+      return y && m && d ? `${d}/${m}/${y}` : fv.value;
+    }
+    case 'boolean':
+      return fv.value == null ? '' : fv.value ? 'Sim' : 'Não';
+    case 'multiselect':
+      return fv.value.join(', ');
+  }
+}

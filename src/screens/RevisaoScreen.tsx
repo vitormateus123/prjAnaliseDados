@@ -19,6 +19,7 @@ import { parseFieldValue } from '../utils/fieldValue';
 import { purposeIcon, purposeLabel } from '../constants/extractionPurpose';
 import { refineFields, toRefineTargetFields, RefineTargetField } from '../services/api/ai/RefineService';
 import { summarizeReport } from '../services/api/ai/SummaryService';
+import { exportReportAsPdf } from '../services/pdf/ReportPdfService';
 import { colors, radius, shadows, spacing } from '../theme';
 
 function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
@@ -42,6 +43,7 @@ export function RevisaoScreen() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   // Snapshot dos campos/itens tal como carregados, pra saber em handleSave
   // se algo mudou desde então — só vale a pena chamar a IA de novo pro
@@ -372,6 +374,25 @@ export function RevisaoScreen() {
     }
   }
 
+  // ─── exportar PDF ─────────────────────────────────────────────────────────
+
+  /** Exporta o que está na tela agora (inclui edições ainda não salvas) —
+   * não depende de salvar antes. */
+  async function handleExportPdf() {
+    if (!report || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      await exportReportAsPdf(report);
+    } catch (err) {
+      Alert.alert(
+        'Não foi possível gerar o PDF',
+        err instanceof Error ? err.message : 'Tente novamente em instantes.',
+      );
+    } finally {
+      setExportingPdf(false);
+    }
+  }
+
   // ─── render ───────────────────────────────────────────────────────────────
 
   const hasCaptures = report.captures.length > 0;
@@ -505,6 +526,22 @@ export function RevisaoScreen() {
           )}
 
           <TouchableOpacity
+            style={[styles.exportButton, (isRefining || exportingPdf) && styles.buttonDisabled]}
+            onPress={() => void handleExportPdf()}
+            activeOpacity={0.85}
+            disabled={isRefining || exportingPdf}
+          >
+            {exportingPdf ? (
+              <ActivityIndicator size="small" color={colors.primary} />
+            ) : (
+              <Ionicons name="document-outline" size={20} color={colors.primary} />
+            )}
+            <Text style={styles.exportButtonText}>
+              {exportingPdf ? 'Gerando PDF…' : 'Exportar PDF'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
             style={[styles.button, isRefining && styles.buttonDisabled]}
             onPress={handleSave}
             activeOpacity={0.88}
@@ -600,5 +637,12 @@ const styles = StyleSheet.create({
     ...shadows.md,
   },
   buttonDisabled: { opacity: 0.6 },
+  exportButton: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
+    backgroundColor: colors.surface, paddingVertical: spacing.md,
+    borderRadius: radius.lg, marginTop: spacing.md,
+    borderWidth: 1.5, borderColor: colors.primary,
+  },
+  exportButtonText: { color: colors.primary, fontSize: 15, fontWeight: '700' },
   buttonText: { color: colors.textOnPrimary, fontSize: 16, fontWeight: '700' },
 });
