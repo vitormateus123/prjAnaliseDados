@@ -118,20 +118,32 @@ function itemsSection(items: ReportItem[]): string {
 
 function capturesSection(captures: Capture[], images: Record<string, string>): string {
   const parts: string[] = [];
-  let voiceCount = 0;
+  let voiceWithoutTranscript = 0;
 
   for (const c of captures) {
     if (c.type === 'photo' && images[c.id]) {
       parts.push(`<figure><img src="${images[c.id]}" /></figure>`);
     } else if (c.type === 'text' && c.text_content?.trim()) {
-      parts.push(`<blockquote>${escapeHtml(c.text_content.trim())}</blockquote>`);
+      parts.push(
+        `<div class="capture-label">Texto digitado</div><blockquote>${escapeHtml(c.text_content.trim())}</blockquote>`,
+      );
     } else if (c.type === 'voice') {
-      voiceCount++;
+      // O áudio em si não entra no PDF, mas a transcrição gerada na
+      // captura (Groq/Whisper — ver Capture.transcript/text_content)
+      // sim, do mesmo jeito que o texto digitado.
+      const transcript = (c.transcript ?? c.text_content)?.trim();
+      if (transcript) {
+        parts.push(
+          `<div class="capture-label">Transcrição do áudio</div><blockquote>${escapeHtml(transcript)}</blockquote>`,
+        );
+      } else {
+        voiceWithoutTranscript++;
+      }
     }
   }
-  if (voiceCount > 0) {
+  if (voiceWithoutTranscript > 0) {
     parts.push(
-      `<p class="note">${voiceCount === 1 ? '1 gravação de áudio' : `${voiceCount} gravações de áudio`} usada${voiceCount === 1 ? '' : 's'} na extração (não incluída${voiceCount === 1 ? '' : 's'} no PDF).</p>`,
+      `<p class="note">${voiceWithoutTranscript === 1 ? '1 gravação de áudio' : `${voiceWithoutTranscript} gravações de áudio`} usada${voiceWithoutTranscript === 1 ? '' : 's'} na extração, sem transcrição disponível (áudio não incluído no PDF).</p>`,
     );
   }
   return parts.length > 0 ? `<h2>Capturas originais</h2>${parts.join('')}` : '';
@@ -187,6 +199,7 @@ export function buildReportPdfHtml(report: Report, options: ReportPdfHtmlOptions
   figure { margin: 0 0 12px; text-align: center; page-break-inside: avoid; }
   figure img { max-width: 100%; max-height: 420px; border: 1px solid #e6e8f4; border-radius: 4px; }
   blockquote { margin: 0 0 12px; padding: 8px 12px; background: #f8f9fd; border-left: 3px solid #d7daf0; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .capture-label { font-size: 10px; font-weight: 700; color: #9599b3; text-transform: uppercase; letter-spacing: 0.4px; margin: 0 0 4px; }
   .note { color: #5c6079; font-style: italic; margin: 6px 0; }
   .footer { margin-top: 28px; padding-top: 8px; border-top: 1px solid #e6e8f4; font-size: 10px; color: #9599b3; }
 </style>
