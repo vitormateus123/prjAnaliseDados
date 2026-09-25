@@ -76,21 +76,37 @@ function metaLine(label: string, value: string | null | undefined): string {
   return value ? `<div><span class="meta-label">${escapeHtml(label)}:</span> ${escapeHtml(value)}</div>` : '';
 }
 
+/** Um campo do template pode vir sem valor porque não fazia sentido pra
+ * essa extração (ex: template genérico com campo que não se aplica a este
+ * conteúdo específico) — nesses casos ele não deve aparecer no relatório
+ * final, só na tela de Revisão (onde faz sentido oferecer pra preencher
+ * manualmente). Ver buildReportFields em utils/reportBuilder.ts. */
+function isFilled(field: ReportField): boolean {
+  return fieldValueToDisplayString(field.field_value).trim() !== '';
+}
+
 function fieldsTable(fields: ReportField[]): string {
-  const rows = fields
+  const filled = fields.filter(isFilled);
+  if (filled.length === 0) return '';
+  const rows = filled
     .map((f) => `<tr><th>${escapeHtml(f.label)}</th><td>${valueHtml(f)}</td></tr>`)
     .join('');
   return `<table class="kv">${rows}</table>`;
 }
 
 function itemsSection(items: ReportItem[]): string {
-  // Colunas = união das keys de todos os itens, na ordem em que aparecem.
+  // Colunas = união das keys dos campos que têm valor em pelo menos um
+  // item, na ordem em que aparecem — uma coluna que nunca foi preenchida
+  // em nenhum item não fazia sentido pra essa extração e fica de fora.
   const columns: { key: string; label: string }[] = [];
   for (const item of items) {
     for (const f of item.fields) {
+      if (!isFilled(f)) continue;
       if (!columns.some((c) => c.key === f.key)) columns.push({ key: f.key, label: f.label });
     }
   }
+
+  if (columns.length === 0) return '';
 
   const title = `<h2>Itens (${items.length})</h2>`;
 
@@ -111,8 +127,13 @@ function itemsSection(items: ReportItem[]): string {
   }
 
   const blocks = items
-    .map((item, i) => `<div class="item"><h3>Item ${i + 1}</h3>${fieldsTable(item.fields)}</div>`)
+    .map((item, i) => {
+      const table = fieldsTable(item.fields);
+      return table ? `<div class="item"><h3>Item ${i + 1}</h3>${table}</div>` : '';
+    })
+    .filter(Boolean)
     .join('');
+  if (!blocks) return '';
   return `${title}${blocks}`;
 }
 
@@ -164,7 +185,8 @@ export function buildReportPdfHtml(report: Report, options: ReportPdfHtmlOptions
   const summary = report.ai_summary?.trim()
     ? `<div class="summary">${escapeHtml(report.ai_summary.trim())}</div>`
     : '';
-  const fields = report.fields.length > 0 ? `<h2>Informações extraídas</h2>${fieldsTable(report.fields)}` : '';
+  const fieldsTableHtml = fieldsTable(report.fields);
+  const fields = fieldsTableHtml ? `<h2>Informações extraídas</h2>${fieldsTableHtml}` : '';
   const items = report.items.length > 0 ? itemsSection(report.items) : '';
   const captures = capturesSection(report.captures, images);
   const hasContent = Boolean(fields || items);
