@@ -11,9 +11,13 @@ function normalize(url: string): string {
 
 export const BASE_URL = normalize(ENV_URL ?? EXTRA_URL ?? 'http://localhost:8000');
 
-if (!__DEV__ && !BASE_URL.startsWith('https://')) {
-  throw new Error('EXPO_PUBLIC_API_URL deve usar HTTPS em produção.');
-}
+// Mesmo raciocínio do supabaseClient: não lançar aqui em cima. Um throw no
+// carregamento do módulo mata o app antes de qualquer tela (nem a de Login
+// chega a montar). A UI decide o que fazer com o erro.
+export const apiConfigError: string | null =
+  !__DEV__ && !BASE_URL.startsWith('https://')
+    ? 'EXPO_PUBLIC_API_URL deve usar HTTPS em produção (valor atual: ' + BASE_URL + ').'
+    : null;
 
 if (__DEV__) {
   console.log('[apiClient] BASE_URL =', BASE_URL);

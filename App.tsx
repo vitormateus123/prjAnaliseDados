@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { SafeAreaView, Text, StyleSheet } from 'react-native';
 import {
   NavigationContainer,
   DefaultTheme,
@@ -20,9 +21,29 @@ import AjustesScreen from './src/screens/Ajustes';
 import { TemplatesRevisaoScreen } from './src/screens/TemplatesRevisao';
 import { GerenciarFormulariosScreen } from './src/screens/GerenciarFormularios';
 import { startAutoSync } from './src/services/sync/SyncService';
-import { supabase } from './src/services/auth/supabaseClient';
-import { warmUpBackend } from './src/services/api/apiClient';
+import { supabase, supabaseConfigError } from './src/services/auth/supabaseClient';
+import { warmUpBackend, apiConfigError } from './src/services/api/apiClient';
 import { colors } from './src/theme';
+
+function ConfigErrorScreen({ message }: { message: string }) {
+  return (
+    <SafeAreaView style={configErrorStyles.container}>
+      <Text style={configErrorStyles.title}>Configuração ausente</Text>
+      <Text style={configErrorStyles.message}>{message}</Text>
+      <Text style={configErrorStyles.hint}>
+        Verifique as variáveis de ambiente do build (EXPO_PUBLIC_SUPABASE_URL,
+        EXPO_PUBLIC_SUPABASE_ANON_KEY, EXPO_PUBLIC_API_URL) e gere o APK novamente.
+      </Text>
+    </SafeAreaView>
+  );
+}
+
+const configErrorStyles = StyleSheet.create({
+  container: { flex: 1, justifyContent: 'center', padding: 24, backgroundColor: '#fff' },
+  title: { fontSize: 18, fontWeight: '800', marginBottom: 12, color: '#B00020' },
+  message: { fontSize: 14, marginBottom: 16, color: '#333' },
+  hint: { fontSize: 12, color: '#666' },
+});
 
 export type MainTabParamList = {
   'Histórico': undefined;
@@ -161,7 +182,12 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
 
+  const configError = supabaseConfigError || apiConfigError;
+
   useEffect(() => {
+    if (configError) {
+      return;
+    }
     // Dispara assim que o app abre, antes mesmo de saber se ja tem sessao —
     // o objetivo e o backend (Render) comecar a acordar do cold start o
     // quanto antes, em paralelo com a checagem de sessao abaixo.
@@ -193,6 +219,10 @@ export default function App() {
       listener.subscription.unsubscribe();
     };
   }, []);
+
+  if (configError) {
+    return <ConfigErrorScreen message={configError} />;
+  }
 
   if (authLoading) {
     return null;
