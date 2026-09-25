@@ -241,7 +241,6 @@ def _row_to_report_out(row: dict, url_map: dict[str, str]) -> ReportOut:
             mime_type=c.get("mime_type"),
             created_at=c["created_at"],
             text_content=c.get("text_content"),
-            transcript=c.get("transcript"),
         )
         for c in row.get("captures") or []
     ]
@@ -261,20 +260,6 @@ def _row_to_report_out(row: dict, url_map: dict[str, str]) -> ReportOut:
         synced_at=row.get("synced_at"),
     )
 
-
-
-_ALLOWED_INPUT_SOURCES = {"image", "audio", "text"}
-
-
-def _normalize_input_source(value: str | None) -> str | None:
-    """Keep report_fields.input_source compatible with migration 0007.
-
-    Older local reports may contain values such as ``manual`` or ``combined``.
-    Those values describe how a field was produced, but the current column
-    intentionally stores only the concrete capture modality. Unknown values
-    are therefore persisted as NULL instead of aborting the whole sync.
-    """
-    return value if value in _ALLOWED_INPUT_SOURCES else None
 
 @router.post("/", response_model=ReportSyncResult)
 def create_report(report: ReportIn):
@@ -330,7 +315,7 @@ def create_report(report: ReportIn):
                     "form_field_id": f.form_field_id,
                     "confidence": f.confidence,
                     "source": f.source,
-                    "input_source": _normalize_input_source(f.input_source),
+                    "input_source": f.input_source,
                     "was_edited": f.was_edited,
                     "dynamic_key": f.key if not f.form_field_id else None,
                     "dynamic_label": f.label if not f.form_field_id else None,
@@ -376,7 +361,7 @@ def create_report(report: ReportIn):
                     "form_field_id": field.form_field_id,
                     "confidence": field.confidence,
                     "source": field.source,
-                    "input_source": _normalize_input_source(field.input_source),
+                    "input_source": field.input_source,
                     "was_edited": field.was_edited,
                     **_field_value_to_columns(field.field_value),
                 }
@@ -407,7 +392,6 @@ def create_report(report: ReportIn):
                     "file_url": file_url,
                     "mime_type": c.mime_type,
                     "text_content": c.text_content,
-                    "transcript": c.transcript,
                 })
                 synced_captures.append(SyncedCaptureRef(id=c.id, file_url=file_url))
             supabase.table("captures").upsert(capture_rows, on_conflict="id").execute()

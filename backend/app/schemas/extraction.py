@@ -1,8 +1,6 @@
 # backend/app/schemas/extraction.py
 from pydantic import BaseModel, Field
 
-from app.core.sanitize import AiSource
-
 # ─── finalidade da extracao (modo automatico) ──────────────────────────────
 # Contexto opcional que o usuario informa antes de capturar, pra orientar a
 # IA sobre O QUE ela esta olhando — NAO define campos nem funciona como
@@ -42,10 +40,8 @@ class ExtractedField(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     # De qual fonte esse valor veio predominantemente — só faz sentido
     # quando a captura combina mais de uma modalidade (ex: foto + áudio).
-    # 'image' | 'audio' | 'text' — None quando o modelo não informou. A IA
-    # às vezes devolve "" nesse caso; AiSource normaliza para None (valor
-    # fora da lista quebraria o CHECK de report_fields.input_source).
-    source: AiSource = None
+    # 'image' | 'audio' | 'text' — None quando o modelo não informou.
+    source: str | None = None
 
 class ExtractResponse(BaseModel):
     success: bool
@@ -56,10 +52,6 @@ class ExtractResponse(BaseModel):
     # true = vale a pena chamar de novo (ex: sobrecarga momentânea do
     # provedor de IA); false = erro que tentar de novo não resolve sozinho.
     retryable: bool = False
-    # Transcrição do áudio (Whisper via Groq), só quando media_type='voice'
-    # e a extração teve sucesso — ver POST /extract/. O app guarda isso
-    # junto da capture de voz (Capture.transcript) pra exibir na Revisão.
-    transcript: str | None = None
 
 
 # ─── catálogo enviado à IA para classificação ──────────────────────────────
@@ -151,7 +143,7 @@ class DynamicExtractedField(BaseModel):
     type: str = "text"
     value: str
     confidence: float = Field(ge=0.0, le=1.0)
-    source: AiSource = None
+    source: str | None = None
 
 
 class DynamicExtractedItem(BaseModel):
@@ -188,11 +180,6 @@ class AutoExtractResponse(BaseModel):
     model: str
     error: str | None = None
     retryable: bool = False
-
-    # Transcrição do áudio (Whisper via Groq), só quando a captura incluiu
-    # voz e a classificação/extração teve sucesso — ver POST /extract/auto.
-    # O app guarda isso na capture de voz correspondente (Capture.transcript).
-    transcript: str | None = None
 
 
 # ─── refinamento: re-extração de campos específicos ──────────────────────────

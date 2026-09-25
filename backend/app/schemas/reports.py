@@ -4,8 +4,6 @@
 from typing import Any, Optional
 from pydantic import BaseModel
 
-from app.core.sanitize import AiSource
-
 
 class ReportFieldIn(BaseModel):
     form_field_id: Optional[str] = None   # opcional — campos descobertos nao tem
@@ -14,12 +12,7 @@ class ReportFieldIn(BaseModel):
     field_value: dict[str, Any]
     confidence: Optional[float] = None
     source: str
-    # De qual midia o valor saiu ('image'|'audio'|'text') — so faz sentido
-    # quando a captura combina modalidades; o CHECK de report_fields so
-    # aceita esses tres valores (ou NULL). Qualquer outra coisa que o app
-    # mande aqui (ex: "" vindo da IA) e normalizada para None em vez de
-    # quebrar o INSERT no sync inteiro.
-    input_source: AiSource = None
+    input_source: Optional[str] = None    # 'image' | 'audio' | 'text' | 'combined' | 'manual'
     was_edited: bool = False
     # Campos dinamicos (descobertos pela IA, sem form_field_id)
     dynamic_type: Optional[str] = None
@@ -35,10 +28,6 @@ class CaptureIn(BaseModel):
     # Texto digitado (captures do tipo 'text') — persistido direto, sem
     # upload. Ver migration 0010.
     text_content: Optional[str] = None
-    # Transcricao automatica do audio (captures do tipo 'voice'), gerada na
-    # extracao e devolvida ao app junto do resultado — persistida direto,
-    # igual text_content. Ver migration 0012.
-    transcript: Optional[str] = None
     # Conteudo do arquivo (foto/audio) em base64 — so viaja nesta requisicao
     # (o app le o arquivo local antes de sincronizar); nunca fica salvo em
     # texto puro em lugar nenhum. Presente => o backend faz upload pro
@@ -78,7 +67,7 @@ class ReportFieldOut(BaseModel):
     field_value: dict[str, Any]
     confidence: Optional[float] = None
     source: str
-    input_source: AiSource = None
+    input_source: Optional[str] = None
     was_edited: bool = False
     dynamic_type: Optional[str] = None
 
@@ -94,7 +83,6 @@ class CaptureOut(BaseModel):
     mime_type: Optional[str] = None
     created_at: str
     text_content: Optional[str] = None
-    transcript: Optional[str] = None
 
 
 class ReportItemOut(BaseModel):

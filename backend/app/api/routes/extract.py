@@ -67,7 +67,6 @@ async def extract_fields(
         except Exception as e:
             raise HTTPException(status_code=422, detail=f"fields_json invalido: {e}")
 
-        transcript: str | None = None
         try:
             if media_type == "voice":
                 transcript = await groq_service.transcribe_audio(content, file.content_type)
@@ -87,15 +86,8 @@ async def extract_fields(
             return ExtractResponse(
                 success=False, fields=[], provider="gemini",
                 model="gemini-2.0-flash-lite", error=str(e),
-                # Se a transcricao ja tinha sido feita antes do Gemini falhar,
-                # devolve ela mesmo assim — e um bonus pro usuario preencher
-                # manualmente, mesmo sem os campos extraidos.
-                transcript=transcript,
             )
-        return ExtractResponse(
-            success=True, fields=extracted, provider="gemini", model=model,
-            transcript=transcript,
-        )
+        return ExtractResponse(success=True, fields=extracted, provider="gemini", model=model)
 
     # MODO DESCOBERTA (sem template)
     try:
@@ -369,7 +361,6 @@ async def extract_auto(payload: AutoExtractRequest):
                 provider="gemini",
                 model=_AUTO_MODEL,
                 new_field_keys=new_field_keys,
-                transcript=transcript,
             )
 
         # ─── match="dynamic" (ou fallback se a IA não indicou template_id
@@ -391,7 +382,6 @@ async def extract_auto(payload: AutoExtractRequest):
             dynamic_items=dynamic_items,
             provider="gemini",
             model=_AUTO_MODEL,
-            transcript=transcript,
         )
     except Exception as e:
         logger.exception("Falha ao processar classificacao/estruturacao no modo automatico")

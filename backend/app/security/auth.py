@@ -6,10 +6,8 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 from supabase import Client
-import requests
 
 from app.services.supabase_service import get_admin_client
-from app.core.config import settings
 
 
 @dataclass(frozen=True)
@@ -74,29 +72,15 @@ async def authenticate_request(request: Request) -> None:
 
     admin: Client = get_admin_client()
     try:
-        # Validate the access token against Supabase Auth directly.  Using
-        # the admin client's auth.get_user(token) can be affected by the
-        # client's own auth headers/session state and was causing valid mobile
-        # sessions to be rejected with 401 in production.
-        response = requests.get(
-            f"{settings.supabase_url.rstrip('/')}/auth/v1/user",
-            headers={
-                "apikey": settings.supabase_service_key,
-                "Authorization": f"Bearer {token}",
-            },
-            timeout=10,
-        )
-        if response.status_code != 200:
-            raise ValueError(f"Supabase Auth rejected token ({response.status_code})")
-
-        auth_user = response.json()
-        if not auth_user.get("id"):
+        auth_response = admin.auth.get_user(token)
+        auth_user = getattr(auth_response, "user", None)
+        if auth_user is None:
             raise ValueError("invalid auth user")
 
         profile_response = (
             admin.table("users")
             .select("id,name,role,organization_id")
-            .eq("id", str(auth_user["id"]))
+            .eq("id", str(auth_user.id))
             .maybe_single()
             .execute()
         )
@@ -111,8 +95,8 @@ async def authenticate_request(request: Request) -> None:
             raise HTTPException(status_code=403, detail="Perfil não autorizado.")
 
         user = AuthenticatedUser(
-            id=str(auth_user["id"]),
-            email=auth_user.get("email"),
+            id=str(auth_user.id),
+            email=getattr(auth_user, "email", None),
             name=profile.get("name") or "",
             role=profile["role"],
             organization_id=profile.get("organization_id"),

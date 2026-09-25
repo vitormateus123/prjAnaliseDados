@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -33,7 +33,6 @@ import { fetchFormTemplateById } from '../services/api/forms/TemplatesService';
 import { FormTemplate } from '../types/forms';
 import { AutoExtractionResult, Capture, ExtractionPurpose, Report, ReportField, ReportItem } from '../types/reports';
 import {
-  attachTranscript,
   buildDynamicReportFields,
   buildDynamicReportItems,
   buildReportFields,
@@ -41,7 +40,6 @@ import {
   emptyReportItem,
 } from '../utils/reportBuilder';
 import { PURPOSE_OPTIONS } from '../constants/extractionPurpose';
-import { makeFieldFocusHandler } from '../utils/scrollFieldIntoView';
 import { styles as shared } from '../styles';
 import { colors, radius, shadows, spacing } from '../theme';
 
@@ -77,14 +75,6 @@ export default function CapturaScreen() {
 
   // Modal visual para escolher entre câmera e galeria.
   const [photoPickerVisible, setPhotoPickerVisible] = useState(false);
-
-  // Rola até o campo focado (instrução personalizada, texto livre) pra ele
-  // não ficar escondido atrás do teclado — ver utils/scrollFieldIntoView.
-  const scrollRef = useRef<ScrollView>(null);
-  const onFieldFocus = useMemo(
-    () => makeFieldFocusHandler(() => scrollRef.current),
-    [],
-  );
 
   const hasStaged =
     stagedPhotos.length > 0 ||
@@ -357,17 +347,9 @@ export default function CapturaScreen() {
         ? [emptyReportItem(itemTemplateFields)]
         : [];
 
-      // Mesmo quando a extração dos campos falha, o Whisper pode já ter
-      // transcrito o áudio com sucesso — vale a pena guardar mesmo assim
-      // (ver ExtractResponse no backend).
-      const capturesWithTranscript = attachTranscript(
-        [capture],
-        result.transcript,
-      );
-
       await persistReport(
         activeTemplate,
-        capturesWithTranscript,
+        [capture],
         buildReportFields(
           flatTemplateFields,
           result.success
@@ -507,14 +489,6 @@ export default function CapturaScreen() {
       return;
     }
 
-    // A partir daqui a extração teve sucesso — se a captura combinava um
-    // áudio, o Whisper já transcreveu; anexa o texto à capture de voz para
-    // ela viajar junto do relatório (ver attachTranscript).
-    const capturesWithTranscript = attachTranscript(
-      captures,
-      auto.transcript,
-    );
-
     // ─── sem template: a IA estruturou os campos/itens diretamente ───────
     if (auto.structure_mode === 'dynamic') {
       const flatFields =
@@ -532,15 +506,20 @@ export default function CapturaScreen() {
         items.length === 0
       ) {
         finishFailureAlert(
-          capturesWithTranscript,
+          captures,
           retry,
         );
 
         return;
       }
 
+      Alert.alert(
+        'Informação organizada',
+        'Organizamos esta informação sem um formulário fixo. Confira os dados antes de salvar.',
+      );
+
       await persistDynamicReport(
-        capturesWithTranscript,
+        captures,
         auto,
         flatFields,
         items,
@@ -552,7 +531,7 @@ export default function CapturaScreen() {
     // ─── formulário reaproveitado do catálogo ─────────────────────────────
     if (!auto.template_id) {
       finishFailureAlert(
-        capturesWithTranscript,
+        captures,
         retry,
       );
 
@@ -610,7 +589,7 @@ export default function CapturaScreen() {
 
     await persistReport(
       resolvedTemplate,
-      capturesWithTranscript,
+      captures,
       flatFields,
       items,
       false,
@@ -977,7 +956,6 @@ export default function CapturaScreen() {
     >
       <KeyboardAvoidingScreen>
         <ScrollView
-          ref={scrollRef}
           style={local.scroll}
           contentContainerStyle={
             local.content
@@ -1289,7 +1267,6 @@ export default function CapturaScreen() {
                     editable={
                       !isProcessing
                     }
-                    onFocus={onFieldFocus}
                   />
                 )}
 
@@ -1575,7 +1552,6 @@ export default function CapturaScreen() {
                 multiline
                 autoFocus
                 editable={!isProcessing}
-                onFocus={onFieldFocus}
               />
 
               <View

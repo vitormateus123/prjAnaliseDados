@@ -61,11 +61,6 @@ export interface Capture {
   // Texto digitado (captures do tipo 'text') — persistido de verdade
   // desde a criação da capture, não só usado na hora da extração.
   text_content?: string;
-  // Transcrição automática do áudio (captures do tipo 'voice'), devolvida
-  // pela extração (ExtractionResult.transcript / AutoExtractionResult.
-  // transcript) e anexada aqui em Captura.tsx — ver attachTranscript em
-  // utils/reportBuilder.ts. Exibida na Revisão junto do player de áudio.
-  transcript?: string | null;
   // Conteúdo do arquivo em base64, só usado para montar o payload de um
   // POST /reports/ (ver SyncService.attachCaptureData) — nunca gravado no
   // AsyncStorage local nem exibido; existe só de passagem até o backend
@@ -85,9 +80,6 @@ export interface ExtractionResult {
   retryable?: boolean;
   provider?: string;
   model?: string;
-  // Transcrição do áudio (só quando media_type='voice') — ver
-  // Capture.transcript.
-  transcript?: string | null;
 }
 
 // Resposta de POST /extract/auto — o app manda só a mídia, sem escolher
@@ -148,9 +140,6 @@ export interface AutoExtractionResult {
   retryable?: boolean;
   provider?: string;
   model?: string;
-  // Transcrição do áudio, quando a captura combinada incluiu voz — ver
-  // Capture.transcript.
-  transcript?: string | null;
 }
 
 // Um item dentro de um relatório com has_items=true (ex: cada produto

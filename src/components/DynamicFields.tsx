@@ -8,7 +8,6 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { ReportField } from '../types/reports';
 import { fieldValueToString } from '../utils/fieldValue';
-import { FieldFocusHandler } from '../utils/scrollFieldIntoView';
 import { styles } from '../styles';
 import { colors } from '../theme';
 import { ConfidenceBadge } from './ConfidenceBadge';
@@ -20,10 +19,6 @@ interface DynamicFieldsProps {
   onRegenerate?: (key: string) => void;  // pede à IA para re-extrair este campo
   regeneratingKey?: string | null;        // key do campo que está sendo refinado no momento
   showEmptyMessage?: boolean;
-  // Rola o scroll/lista pai até o campo quando ele é focado, pra não ficar
-  // escondido atrás do teclado. Opcional pra não quebrar quem ainda não
-  // passa isso.
-  onFieldFocus?: FieldFocusHandler;
 }
 
 export function DynamicFields({
@@ -33,7 +28,6 @@ export function DynamicFields({
   onRegenerate,
   regeneratingKey,
   showEmptyMessage = false,
-  onFieldFocus,
 }: DynamicFieldsProps) {
   return (
     <View>
@@ -169,7 +163,6 @@ export function DynamicFields({
               }
               multiline={isMultiline}
               scrollEnabled={false}
-              onFocus={onFieldFocus}
               placeholder={field.label}
               placeholderTextColor={colors.textMuted}
               textAlignVertical={
