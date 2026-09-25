@@ -425,6 +425,30 @@ def list_reports(limit: int = 100):
     return [_row_to_report_out(row, url_map) for row in rows]
 
 
+@router.delete("/{report_id}")
+def delete_report(report_id: str):
+    """Apaga o relatorio no banco. report_fields, report_items, captures e
+    extractions tem ON DELETE CASCADE (ver migration 0001/0004), entao um
+    delete na tabela reports ja limpa tudo isso sozinho — nao precisamos
+    apagar linha por linha aqui. Arquivos no bucket 'captures' associados
+    (se houver) nao sao removidos do Storage; ficam orfaos, mas relatorios
+    "em branco" tipicamente nao tem captura com arquivo.
+
+    200 com corpo (em vez de 204 sem corpo) de proposito: apiFetch no app
+    sempre chama response.json(), que quebra num 204 sem corpo."""
+    supabase = get_client()
+    try:
+        resp = supabase.table("reports").delete().eq("id", report_id).execute()
+    except PostgrestAPIError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Erro ao excluir relatorio: {e.message}",
+        )
+    if not resp.data:
+        raise HTTPException(status_code=404, detail="Relatorio nao encontrado.")
+    return {"deleted": True}
+
+
 @router.get("/{report_id}", response_model=ReportOut)
 def get_report(report_id: str):
     supabase = get_client()

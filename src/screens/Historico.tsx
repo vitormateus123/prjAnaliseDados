@@ -6,7 +6,7 @@ import {
 import { useNavigation, useFocusEffect, NavigationProp } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService } from '../storage/StorageService';
-import { fetchRemoteReports } from '../services/api/reports/ReportsService';
+import { fetchRemoteReports, deleteRemoteReport } from '../services/api/reports/ReportsService';
 import { syncReport } from '../services/sync/SyncService';
 import { openReportPdf } from '../services/pdf/ReportPdfService';
 import { NetworkError, ApiError } from '../services/api/apiClient';
@@ -309,8 +309,40 @@ export default function HistoricoScreen() {
   }
 
   async function handleDeleteReport(report: Report) {
-    await StorageService.deleteReport(report.id);
-    refreshList();
+    Alert.alert(
+      'Excluir relatório',
+      'Essa ação não pode ser desfeita.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Excluir',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // 'draft' nunca foi sincronizado — não existe cópia remota pra apagar.
+              if (report.status !== 'draft') {
+                await deleteRemoteReport(report.id);
+              }
+            } catch (err) {
+              if (err instanceof NetworkError) {
+                // Sem conexão: apaga local mesmo assim, mas avisa — se o
+                // relatório já estava sincronizado, ele volta a aparecer no
+                // próximo refresh online até ser excluído de novo com internet.
+                Alert.alert(
+                  'Sem conexão',
+                  'O relatório foi removido deste aparelho, mas ainda existe no servidor. Exclua de novo quando estiver online.',
+                );
+              } else if (!(err instanceof ApiError && err.status === 404)) {
+                Alert.alert('Não foi possível excluir', describeRemoteError(err));
+                return;
+              }
+            }
+            await StorageService.deleteReport(report.id);
+            refreshList();
+          },
+        },
+      ],
+    );
   }
 
   if (loading) {

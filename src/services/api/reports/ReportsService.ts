@@ -13,3 +13,11 @@ export async function fetchRemoteReports(): Promise<Report[]> {
   // extra ao Storage por captura) pra permitir exibir a fonte de origem.
   return apiFetch<Report[]>('/reports/', undefined, UPLOAD_TIMEOUT_MS);
 }
+
+/** Apaga o relatório no servidor (Supabase, via backend). Necessário além
+ * de StorageService.deleteReport: um relatório já sincronizado que só é
+ * apagado localmente volta sozinho no próximo refresh, porque o Histórico
+ * remescla com o que ainda existe no servidor. */
+export async function deleteRemoteReport(reportId: string): Promise<void> {
+  await apiFetch<{ deleted: boolean }>(`/reports/${reportId}`, { method: 'DELETE' });
+}
