@@ -95,30 +95,31 @@ function fieldsTable(fields: ReportField[]): string {
 }
 
 function itemsSection(items: ReportItem[]): string {
-  // Colunas = união das keys dos campos que têm valor em pelo menos um
-  // item, na ordem em que aparecem — uma coluna que nunca foi preenchida
-  // em nenhum item não fazia sentido pra essa extração e fica de fora.
-  const columns: { key: string; label: string }[] = [];
-  for (const item of items) {
-    for (const f of item.fields) {
-      if (!isFilled(f)) continue;
-      if (!columns.some((c) => c.key === f.key)) columns.push({ key: f.key, label: f.label });
-    }
-  }
-
-  if (columns.length === 0) return '';
-
   const title = `<h2>Itens (${items.length})</h2>`;
 
-  if (columns.length <= MAX_ITEM_TABLE_COLUMNS) {
+  // Cada item fica só com os campos que têm valor — um campo que não fazia
+  // sentido pra aquele item específico (ex: SKU que só existe em alguns
+  // produtos) não deve aparecer nem como "—".
+  const filledPerItem = items.map((item) => item.fields.filter(isFilled));
+  if (filledPerItem.every((fs) => fs.length === 0)) return '';
+
+  // A tabela compacta (colunas compartilhadas) só funciona sem reintroduzir
+  // campos vazios quando TODO item preenche exatamente o mesmo conjunto de
+  // campos — aí sim uma célula "—" seria enganosa, nunca necessária. Se os
+  // itens preenchem campos diferentes entre si, cada um vira um bloco só
+  // com os campos que ele de fato tem.
+  const keySignature = (fs: ReportField[]) => fs.map((f) => f.key).sort().join('|');
+  const firstSignature = keySignature(filledPerItem[0]);
+  const uniform = filledPerItem.every((fs) => keySignature(fs) === firstSignature);
+  const columns = uniform ? filledPerItem[0].map((f) => ({ key: f.key, label: f.label })) : [];
+
+  if (uniform && columns.length > 0 && columns.length <= MAX_ITEM_TABLE_COLUMNS) {
     const head = `<tr><th class="idx">#</th>${columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join('')}</tr>`;
     const body = items
       .map((item, i) => {
         const cells = columns
-          .map((c) => {
-            const f = item.fields.find((x) => x.key === c.key);
-            return `<td>${f ? valueHtml(f) : EMPTY}</td>`;
-          })
+          .map((c) => valueHtml(item.fields.find((x) => x.key === c.key)!))
+          .map((v) => `<td>${v}</td>`)
           .join('');
         return `<tr><td class="idx">${i + 1}</td>${cells}</tr>`;
       })
