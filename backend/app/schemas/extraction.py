@@ -1,6 +1,8 @@
 # backend/app/schemas/extraction.py
 from pydantic import BaseModel, Field
 
+from app.core.sanitize import AiSource
+
 # ─── finalidade da extracao (modo automatico) ──────────────────────────────
 # Contexto opcional que o usuario informa antes de capturar, pra orientar a
 # IA sobre O QUE ela esta olhando — NAO define campos nem funciona como
@@ -40,8 +42,10 @@ class ExtractedField(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     # De qual fonte esse valor veio predominantemente — só faz sentido
     # quando a captura combina mais de uma modalidade (ex: foto + áudio).
-    # 'image' | 'audio' | 'text' — None quando o modelo não informou.
-    source: str | None = None
+    # 'image' | 'audio' | 'text' — None quando o modelo não informou. A IA
+    # às vezes devolve "" nesse caso; AiSource normaliza para None (valor
+    # fora da lista quebraria o CHECK de report_fields.input_source).
+    source: AiSource = None
 
 class ExtractResponse(BaseModel):
     success: bool
@@ -147,7 +151,7 @@ class DynamicExtractedField(BaseModel):
     type: str = "text"
     value: str
     confidence: float = Field(ge=0.0, le=1.0)
-    source: str | None = None
+    source: AiSource = None
 
 
 class DynamicExtractedItem(BaseModel):

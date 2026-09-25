@@ -4,7 +4,7 @@
 // algo em /extract/auto primeiro (ver TemplatesRevisao.tsx pra esse outro
 // fluxo). Fica acessível a partir de Ajustes.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, FlatList, TextInput,
   StyleSheet, SafeAreaView, ActivityIndicator, Alert, Switch,
@@ -18,6 +18,7 @@ import {
   createTemplate, addField, updateField, deleteField, FieldInput,
 } from '../services/api/forms/TemplatesAdminService';
 import { ApiError, NetworkError } from '../services/api/apiClient';
+import { makeFieldFocusHandler } from '../utils/scrollFieldIntoView';
 import { colors, radius, shadows, spacing } from '../theme';
 
 const FIELD_TYPES: { value: FieldType; label: string }[] = [
@@ -74,6 +75,14 @@ export function GerenciarFormulariosScreen() {
   const [addingFieldFor, setAddingFieldFor] = useState<string | null>(null);
   const [editingField, setEditingField] = useState<{ templateId: string; fieldId: string } | null>(null);
   const [fieldDraft, setFieldDraft] = useState<FieldDraft>(EMPTY_FIELD_DRAFT);
+
+  // Rola a lista até o campo focado pra ele não ficar escondido atrás do
+  // teclado — ver utils/scrollFieldIntoView.
+  const listRef = useRef<FlatList>(null);
+  const onFieldFocus = useMemo(
+    () => makeFieldFocusHandler(() => listRef.current),
+    [],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -212,6 +221,7 @@ export function GerenciarFormulariosScreen() {
           autoCapitalize="none"
           placeholder="numero_documento"
           placeholderTextColor={colors.textMuted}
+          onFocus={onFieldFocus}
         />
         <Text style={styles.formLabel}>Rótulo (exibido na tela)</Text>
         <TextInput
@@ -220,6 +230,7 @@ export function GerenciarFormulariosScreen() {
           onChangeText={(t) => setFieldDraft((d) => ({ ...d, label: t }))}
           placeholder="Número do documento"
           placeholderTextColor={colors.textMuted}
+          onFocus={onFieldFocus}
         />
 
         <Text style={styles.formLabel}>Tipo</Text>
@@ -246,6 +257,7 @@ export function GerenciarFormulariosScreen() {
               onChangeText={(t) => setFieldDraft((d) => ({ ...d, options: t }))}
               placeholder="Opção A, Opção B, Opção C"
               placeholderTextColor={colors.textMuted}
+              onFocus={onFieldFocus}
             />
           </>
         )}
@@ -258,6 +270,7 @@ export function GerenciarFormulariosScreen() {
           placeholder="Identifique o número ou código oficial do documento."
           placeholderTextColor={colors.textMuted}
           multiline
+          onFocus={onFieldFocus}
         />
 
         <View style={styles.switchRow}>
@@ -351,6 +364,7 @@ export function GerenciarFormulariosScreen() {
     <SafeAreaView style={styles.safe}>
       <KeyboardAvoidingScreen>
       <FlatList
+        ref={listRef}
         data={templates}
         keyExtractor={(item) => item.id}
         contentContainerStyle={styles.list}
@@ -368,6 +382,7 @@ export function GerenciarFormulariosScreen() {
                   onChangeText={setNewName}
                   placeholder="Levantamento de equipamentos"
                   placeholderTextColor={colors.textMuted}
+                  onFocus={onFieldFocus}
                 />
                 <Text style={styles.formLabel}>Descrição (opcional)</Text>
                 <TextInput
@@ -377,6 +392,7 @@ export function GerenciarFormulariosScreen() {
                   placeholder="Do que se trata esse formulário"
                   placeholderTextColor={colors.textMuted}
                   multiline
+                  onFocus={onFieldFocus}
                 />
                 <View style={styles.switchRow}>
                   <Text style={styles.formLabel}>Tem itens repetidos (ex: lista de produtos)</Text>

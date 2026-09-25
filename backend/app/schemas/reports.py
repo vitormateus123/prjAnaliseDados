@@ -4,6 +4,8 @@
 from typing import Any, Optional
 from pydantic import BaseModel
 
+from app.core.sanitize import AiSource
+
 
 class ReportFieldIn(BaseModel):
     form_field_id: Optional[str] = None   # opcional — campos descobertos nao tem
@@ -12,7 +14,12 @@ class ReportFieldIn(BaseModel):
     field_value: dict[str, Any]
     confidence: Optional[float] = None
     source: str
-    input_source: Optional[str] = None    # 'image' | 'audio' | 'text' | 'combined' | 'manual'
+    # De qual midia o valor saiu ('image'|'audio'|'text') — so faz sentido
+    # quando a captura combina modalidades; o CHECK de report_fields so
+    # aceita esses tres valores (ou NULL). Qualquer outra coisa que o app
+    # mande aqui (ex: "" vindo da IA) e normalizada para None em vez de
+    # quebrar o INSERT no sync inteiro.
+    input_source: AiSource = None
     was_edited: bool = False
     # Campos dinamicos (descobertos pela IA, sem form_field_id)
     dynamic_type: Optional[str] = None
@@ -71,7 +78,7 @@ class ReportFieldOut(BaseModel):
     field_value: dict[str, Any]
     confidence: Optional[float] = None
     source: str
-    input_source: Optional[str] = None
+    input_source: AiSource = None
     was_edited: bool = False
     dynamic_type: Optional[str] = None
 

@@ -3,7 +3,7 @@
 // /extract/auto (review_status='pending') — aprovar como estão, renomear,
 // ou mesclar em um template já existente quando a IA duplicou algo.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import {
   View, Text, TouchableOpacity, FlatList, TextInput,
   StyleSheet, SafeAreaView, ActivityIndicator, Alert,
@@ -16,6 +16,7 @@ import {
   fetchPendingTemplates, approveTemplate, renameTemplate, mergeTemplate,
 } from '../services/api/forms/TemplatesAdminService';
 import { ApiError, NetworkError } from '../services/api/apiClient';
+import { makeFieldFocusHandler } from '../utils/scrollFieldIntoView';
 import { colors, radius, shadows, spacing } from '../theme';
 
 function describeError(err: unknown): string {
@@ -36,6 +37,14 @@ export function TemplatesRevisaoScreen() {
   const [draftName, setDraftName] = useState('');
   const [draftDescription, setDraftDescription] = useState('');
   const [mergingId, setMergingId] = useState<string | null>(null);
+
+  // Rola a lista até o campo focado pra ele não ficar escondido atrás do
+  // teclado — ver utils/scrollFieldIntoView.
+  const listRef = useRef<FlatList>(null);
+  const onFieldFocus = useMemo(
+    () => makeFieldFocusHandler(() => listRef.current),
+    [],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -159,6 +168,7 @@ export function TemplatesRevisaoScreen() {
         </View>
       ) : (
         <FlatList
+          ref={listRef}
           data={pending}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.list}
@@ -192,6 +202,7 @@ export function TemplatesRevisaoScreen() {
                       onChangeText={setDraftName}
                       placeholder="Nome do formulário"
                       placeholderTextColor="#94a3b8"
+                      onFocus={onFieldFocus}
                     />
                     <TextInput
                       style={[styles.input, { marginTop: 8 }]}
@@ -199,6 +210,7 @@ export function TemplatesRevisaoScreen() {
                       onChangeText={setDraftDescription}
                       placeholder="Descrição (opcional)"
                       placeholderTextColor="#94a3b8"
+                      onFocus={onFieldFocus}
                     />
                     <View style={styles.actionsRow}>
                       <TouchableOpacity

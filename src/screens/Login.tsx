@@ -1,8 +1,9 @@
-import { useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -12,6 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../services/auth/supabaseClient';
 import { warmUpBackend } from '../services/api/apiClient';
+import { makeFieldFocusHandler } from '../utils/scrollFieldIntoView';
 import { colors, radius, shadows, spacing } from '../theme';
 
 export default function LoginScreen() {
@@ -19,6 +21,15 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Antes não havia ScrollView aqui: em telas pequenas, com o teclado
+  // aberto, o campo de senha (mais abaixo) ficava atrás do teclado sem
+  // nenhuma forma de rolar até ele. Ver utils/scrollFieldIntoView.
+  const scrollRef = useRef<ScrollView>(null);
+  const onFieldFocus = useMemo(
+    () => makeFieldFocusHandler(() => scrollRef.current),
+    [],
+  );
 
   async function handleLogin() {
     const normalizedEmail = email.trim();
@@ -63,7 +74,11 @@ export default function LoginScreen() {
       style={styles.safe}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      <View style={styles.container}>
+      <ScrollView
+        ref={scrollRef}
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={styles.content}>
           <View style={styles.iconContainer}>
             <Ionicons name="lock-closed" size={30} color={colors.primary} />
@@ -91,6 +106,7 @@ export default function LoginScreen() {
               autoComplete="email"
               editable={!loading}
               style={styles.input}
+              onFocus={onFieldFocus}
             />
 
             <Text style={styles.label}>Senha</Text>
@@ -107,6 +123,7 @@ export default function LoginScreen() {
               autoComplete="password"
               editable={!loading}
               style={styles.input}
+              onFocus={onFieldFocus}
               onSubmitEditing={handleLogin}
               returnKeyType="done"
             />
@@ -135,7 +152,7 @@ export default function LoginScreen() {
             </TouchableOpacity>
           </View>
         </View>
-      </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
@@ -143,7 +160,10 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: colors.bg },
   container: {
-    flex: 1,
+    // flexGrow (não flex) é o que permite ao ScrollView centralizar o
+    // conteúdo quando ele cabe na tela E ainda rolar normalmente quando o
+    // teclado reduz o espaço disponível e o conteúdo não cabe mais.
+    flexGrow: 1,
     paddingHorizontal: spacing.xxl,
     paddingVertical: spacing.xxl,
     justifyContent: 'center',

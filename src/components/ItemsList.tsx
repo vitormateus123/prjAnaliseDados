@@ -7,12 +7,14 @@ import * as Crypto from 'expo-crypto';
 import { Ionicons } from '@expo/vector-icons';
 import { ReportItem } from '../types/reports';
 import { emptyFieldValue, parseFieldValue } from '../utils/fieldValue';
+import { FieldFocusHandler } from '../utils/scrollFieldIntoView';
 import { DynamicFields } from './DynamicFields';
 import { colors, radius, shadows, spacing } from '../theme';
 
 interface ItemsListProps {
   items: ReportItem[];
   onChange: (items: ReportItem[]) => void;
+  onFieldFocus?: FieldFocusHandler;
 }
 
 /** Novo item vazio, usando o primeiro item existente como molde de quais
@@ -31,7 +33,7 @@ function emptyItemFrom(template: ReportItem): ReportItem {
   };
 }
 
-export function ItemsList({ items, onChange }: ItemsListProps) {
+export function ItemsList({ items, onChange, onFieldFocus }: ItemsListProps) {
   function handleFieldChange(itemIndex: number, key: string, rawValue: string) {
     const updated = items.map((item, idx) => {
       if (idx !== itemIndex) return item;
@@ -85,6 +87,7 @@ export function ItemsList({ items, onChange }: ItemsListProps) {
           <DynamicFields
             fields={item.fields}
             onChange={(key, rawValue) => handleFieldChange(idx, key, rawValue)}
+            onFieldFocus={onFieldFocus}
           />
         </View>
       ))}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -41,6 +41,7 @@ import {
   emptyReportItem,
 } from '../utils/reportBuilder';
 import { PURPOSE_OPTIONS } from '../constants/extractionPurpose';
+import { makeFieldFocusHandler } from '../utils/scrollFieldIntoView';
 import { styles as shared } from '../styles';
 import { colors, radius, shadows, spacing } from '../theme';
 
@@ -76,6 +77,14 @@ export default function CapturaScreen() {
 
   // Modal visual para escolher entre câmera e galeria.
   const [photoPickerVisible, setPhotoPickerVisible] = useState(false);
+
+  // Rola até o campo focado (instrução personalizada, texto livre) pra ele
+  // não ficar escondido atrás do teclado — ver utils/scrollFieldIntoView.
+  const scrollRef = useRef<ScrollView>(null);
+  const onFieldFocus = useMemo(
+    () => makeFieldFocusHandler(() => scrollRef.current),
+    [],
+  );
 
   const hasStaged =
     stagedPhotos.length > 0 ||
@@ -530,11 +539,6 @@ export default function CapturaScreen() {
         return;
       }
 
-      Alert.alert(
-        'Informação organizada',
-        'Organizamos esta informação sem um formulário fixo. Confira os dados antes de salvar.',
-      );
-
       await persistDynamicReport(
         capturesWithTranscript,
         auto,
@@ -973,6 +977,7 @@ export default function CapturaScreen() {
     >
       <KeyboardAvoidingScreen>
         <ScrollView
+          ref={scrollRef}
           style={local.scroll}
           contentContainerStyle={
             local.content
@@ -1284,6 +1289,7 @@ export default function CapturaScreen() {
                     editable={
                       !isProcessing
                     }
+                    onFocus={onFieldFocus}
                   />
                 )}
 
@@ -1569,6 +1575,7 @@ export default function CapturaScreen() {
                 multiline
                 autoFocus
                 editable={!isProcessing}
+                onFocus={onFieldFocus}
               />
 
               <View

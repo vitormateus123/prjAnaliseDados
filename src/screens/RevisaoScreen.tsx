@@ -1,5 +1,5 @@
 // src/screens/RevisaoScreen.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet,
   ScrollView, Alert, SafeAreaView, ActivityIndicator, TextInput,
@@ -20,6 +20,7 @@ import { purposeIcon, purposeLabel } from '../constants/extractionPurpose';
 import { refineFields, toRefineTargetFields, RefineTargetField } from '../services/api/ai/RefineService';
 import { summarizeReport } from '../services/api/ai/SummaryService';
 import { openReportPdf } from '../services/pdf/ReportPdfService';
+import { makeFieldFocusHandler } from '../utils/scrollFieldIntoView';
 import { colors, radius, shadows, spacing } from '../theme';
 
 function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
@@ -43,6 +44,14 @@ export function RevisaoScreen() {
   const [report, setReport] = useState<Report | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
+  // Rola até o campo focado (título/valor de campo, item, etc) pra ele não
+  // ficar escondido atrás do teclado — ver utils/scrollFieldIntoView.
+  const scrollRef = useRef<ScrollView>(null);
+  const onFieldFocus = useMemo(
+    () => makeFieldFocusHandler(() => scrollRef.current),
+    [],
+  );
   const [exportingPdf, setExportingPdf] = useState(false);
 
   // Snapshot dos campos/itens tal como carregados, pra saber em handleSave
@@ -409,6 +418,7 @@ export function RevisaoScreen() {
       <LoadingOverlay visible={saving} message="Salvando..." />
       <KeyboardAvoidingScreen>
         <ScrollView
+          ref={scrollRef}
           contentContainerStyle={styles.container}
           keyboardShouldPersistTaps="handled"
         >
@@ -469,6 +479,7 @@ export function RevisaoScreen() {
               onRegenerate={canRefine ? handleRegenerateField : undefined}
               regeneratingKey={regeneratingKey}
               showEmptyMessage={false}
+              onFieldFocus={onFieldFocus}
             />
 
             {/* Seção "Adicionar informação" */}
@@ -481,6 +492,7 @@ export function RevisaoScreen() {
                 placeholder="Nome da informação"
                 placeholderTextColor={colors.textMuted}
                 editable={!isRefining}
+                onFocus={onFieldFocus}
               />
               <TextInput
                 style={styles.addFieldInput}
@@ -489,6 +501,7 @@ export function RevisaoScreen() {
                 placeholder="Valor (deixe vazio para a IA preencher)"
                 placeholderTextColor={colors.textMuted}
                 editable={!isRefining}
+                onFocus={onFieldFocus}
               />
               <View style={styles.addFieldButtons}>
                 <TouchableOpacity
@@ -522,7 +535,7 @@ export function RevisaoScreen() {
           </View>
 
           {report.items && report.items.length > 0 && (
-            <ItemsList items={report.items} onChange={handleItemsChange} />
+            <ItemsList items={report.items} onChange={handleItemsChange} onFieldFocus={onFieldFocus} />
           )}
 
           <TouchableOpacity
