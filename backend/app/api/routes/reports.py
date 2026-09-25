@@ -262,6 +262,20 @@ def _row_to_report_out(row: dict, url_map: dict[str, str]) -> ReportOut:
     )
 
 
+
+_ALLOWED_INPUT_SOURCES = {"image", "audio", "text"}
+
+
+def _normalize_input_source(value: str | None) -> str | None:
+    """Keep report_fields.input_source compatible with migration 0007.
+
+    Older local reports may contain values such as ``manual`` or ``combined``.
+    Those values describe how a field was produced, but the current column
+    intentionally stores only the concrete capture modality. Unknown values
+    are therefore persisted as NULL instead of aborting the whole sync.
+    """
+    return value if value in _ALLOWED_INPUT_SOURCES else None
+
 @router.post("/", response_model=ReportSyncResult)
 def create_report(report: ReportIn):
     """Recebe um relatorio ja revisado no app e grava no banco.
@@ -316,7 +330,7 @@ def create_report(report: ReportIn):
                     "form_field_id": f.form_field_id,
                     "confidence": f.confidence,
                     "source": f.source,
-                    "input_source": f.input_source,
+                    "input_source": _normalize_input_source(f.input_source),
                     "was_edited": f.was_edited,
                     "dynamic_key": f.key if not f.form_field_id else None,
                     "dynamic_label": f.label if not f.form_field_id else None,
@@ -362,7 +376,7 @@ def create_report(report: ReportIn):
                     "form_field_id": field.form_field_id,
                     "confidence": field.confidence,
                     "source": field.source,
-                    "input_source": field.input_source,
+                    "input_source": _normalize_input_source(field.input_source),
                     "was_edited": field.was_edited,
                     **_field_value_to_columns(field.field_value),
                 }

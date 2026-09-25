@@ -89,6 +89,32 @@ async def authenticate_request(request: Request) -> None:
         # acontece quando o usuario autenticado no Supabase Auth ainda nao
         # tem uma linha correspondente em public.users.
         profile = profile_response.data if profile_response is not None else None
+
+        # Supabase Auth and public.users are separate tables. Accounts created
+        # in Auth before a profile trigger/migration exists therefore reach
+        # this API with a valid JWT but no public.users row, which used to turn
+        # every authenticated request into HTTP 403. Provision the minimal
+        # default profile server-side on first API use. Never trust role or
+        # organization data from the client.
+        if not profile:
+            email = getattr(auth_user, "email", None)
+            metadata = getattr(auth_user, "user_metadata", None) or {}
+            name = (
+                metadata.get("name")
+                or metadata.get("full_name")
+                or (email.split("@", 1)[0] if email else "Usuário")
+            )
+            created = (
+                admin.table("users")
+                .insert({
+                    "id": str(auth_user.id),
+                    "name": str(name)[:120],
+                    "role": "field_agent",
+                })
+                .execute()
+            )
+            profile = created.data[0] if created.data else None
+
         if not profile:
             raise HTTPException(status_code=403, detail="Usuário sem perfil autorizado.")
         if profile.get("role") not in {"admin", "field_agent", "viewer"}:
