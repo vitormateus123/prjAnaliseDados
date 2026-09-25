@@ -435,9 +435,21 @@ def delete_report(report_id: str):
     "em branco" tipicamente nao tem captura com arquivo.
 
     200 com corpo (em vez de 204 sem corpo) de proposito: apiFetch no app
-    sempre chama response.json(), que quebra num 204 sem corpo."""
+    sempre chama response.json(), que quebra num 204 sem corpo.
+
+    Fazemos um SELECT antes do DELETE, com o mesmo client (RLS do usuario
+    logado), pra distinguir "nao existe" (404) de "existe mas RLS bloqueou
+    o delete" (403) — sem essa checagem, RLS bloqueando silenciosamente
+    (delete afeta 0 linhas, sem erro) parecia com "relatorio ja nao existe".
+    """
     supabase = get_client()
     try:
+        existing = (
+            supabase.table("reports").select("id").eq("id", report_id).execute()
+        )
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Relatorio nao encontrado.")
+
         resp = supabase.table("reports").delete().eq("id", report_id).execute()
     except PostgrestAPIError as e:
         raise HTTPException(
@@ -445,7 +457,10 @@ def delete_report(report_id: str):
             detail=f"Erro ao excluir relatorio: {e.message}",
         )
     if not resp.data:
-        raise HTTPException(status_code=404, detail="Relatorio nao encontrado.")
+        raise HTTPException(
+            status_code=403,
+            detail="Voce nao tem permissao para excluir este relatorio.",
+        )
     return {"deleted": True}
 
 
