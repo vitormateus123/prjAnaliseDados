@@ -1,6 +1,6 @@
 # backend/app/main.py
 import logging
-from fastapi import FastAPI, Request, HTTPException, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.api.routes import templates, reports, extract
@@ -40,9 +40,16 @@ async def require_authenticated_user(request: Request, call_next):
 
         response = await call_next(request)
         return response
-    except Exception as exc:
-        if isinstance(exc, HTTPException):
-            raise
+    except HTTPException as exc:
+        # Um HTTPException levantado AQUI DENTRO (ex: authenticate_request)
+        # não passa pelo ExceptionMiddleware do FastAPI — esse middleware
+        # fica mais para dentro na pilha, perto das rotas, então nunca vê
+        # exceções que nascem no próprio middleware de auth. Um "raise"
+        # simples sobe direto pro ServerErrorMiddleware, que não sabe
+        # traduzir HTTPException e devolve 500 genérico pra qualquer coisa
+        # — foi assim que um 403 (usuário sem perfil) virou 500 pro app.
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    except Exception:
         # A resposta ao app continua genérica (sem expor SQL/paths/provider
         # data), mas o log do servidor precisa do traceback real — sem isso
         # todo 500 vira uma caixa-preta.
