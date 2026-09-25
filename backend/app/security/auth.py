@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Optional
@@ -8,6 +9,8 @@ from fastapi import HTTPException, Request
 from supabase import Client
 
 from app.services.supabase_service import get_admin_client
+
+logger = logging.getLogger("auth")
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,14 @@ async def authenticate_request(request: Request) -> None:
         # acontece quando o usuario autenticado no Supabase Auth ainda nao
         # tem uma linha correspondente em public.users.
         profile = profile_response.data if profile_response is not None else None
+
+        # Auth e public.users são tabelas separadas. Contas criadas no Auth
+        # sem trigger/migration de perfil chegam aqui com JWT válido e sem
+        # linha em public.users — isso virava HTTP 403 em toda rota. O
+        # perfil mínimo é criado no servidor; role/org nunca vêm do cliente.
+        if not profile:
+            profile = _provision_default_profile(admin, auth_user)
+
         if not profile:
             raise HTTPException(status_code=403, detail="Usuário sem perfil autorizado.")
         if profile.get("role") not in {"admin", "field_agent", "viewer"}:
@@ -110,6 +121,44 @@ async def authenticate_request(request: Request) -> None:
     request.state.auth_user = user
     request.state.auth_token = token
     request.state._auth_context_tokens = (user_token, token_token)
+
+
+def _provision_default_profile(admin: Client, auth_user) -> dict | None:
+    email = getattr(auth_user, "email", None)
+    metadata = getattr(auth_user, "user_metadata", None) or {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    name = (
+        metadata.get("name")
+        or metadata.get("full_name")
+        or (email.split("@", 1)[0] if email else "Usuário")
+    )
+    user_id = str(auth_user.id)
+    try:
+        created = (
+            admin.table("users")
+            .insert({
+                "id": user_id,
+                "name": str(name)[:120],
+                "role": "field_agent",
+            })
+            .execute()
+        )
+        profile = created.data[0] if created.data else None
+        if profile:
+            logger.info("Perfil padrão criado para %s", user_id)
+            return profile
+    except Exception:
+        logger.exception("Falha ao criar perfil padrão para %s", user_id)
+
+    retry = (
+        admin.table("users")
+        .select("id,name,role,organization_id")
+        .eq("id", user_id)
+        .maybe_single()
+        .execute()
+    )
+    return retry.data if retry is not None else None
 
 
 async def clear_auth_context(request: Request) -> None:

@@ -90,8 +90,18 @@ async function request(
 async function parseError(response: Response): Promise<never> {
   // Never expose backend internals verbatim to the UI.
   const status = response.status;
+  let detail: string | undefined;
+  try {
+    const parsed = await response.json();
+    if (typeof parsed?.detail === 'string') {
+      detail = parsed.detail;
+    }
+  } catch {
+    // Keep the generic message.
+  }
+
   if (__DEV__) {
-    console.error('[apiClient] HTTP', status);
+    console.error('[apiClient] HTTP', status, detail ?? '');
   }
 
   if (status === 401) {
@@ -108,15 +118,10 @@ async function parseError(response: Response): Promise<never> {
     throw new ApiError(500, 'O servidor encontrou um erro. Tente novamente.');
   }
 
-  let message = 'Não foi possível concluir a solicitação.';
-  try {
-    const parsed = await response.json();
-    if (typeof parsed?.detail === 'string' && parsed.detail.length < 180) {
-      message = parsed.detail;
-    }
-  } catch {
-    // Keep the generic message.
-  }
+  const message =
+    detail && detail.length < 180
+      ? detail
+      : 'Não foi possível concluir a solicitação.';
   throw new ApiError(status, message);
 }
 
