@@ -1,0 +1,191 @@
+From 6d642b5175700f4ae28f2ddf2a9da6257a4c4bac Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.local>
+Date: Fri, 25 Sep 2026 09:33:49 +0000
+Subject: [PATCH] fix(app): evita crash antes da tela de Login em builds
+ standalone
+
+O APK (build de producao, __DEV__=false) quebrava antes mesmo de montar
+a NavigationContainer porque supabaseClient.ts e apiClient.ts lancavam
+Error no carregamento do modulo quando EXPO_PUBLIC_SUPABASE_URL /
+EXPO_PUBLIC_SUPABASE_ANON_KEY nao estavam definidas (nunca foram
+cadastradas como EAS Environment Variables, so existiam no .env local,
+que o EAS Build na nuvem nao le). Um throw nesse ponto mata o app
+inteiro sem chegar a renderizar nada.
+
+Agora os dois modulos expoem um *ConfigError em vez de lancar, e o
+App.tsx mostra uma tela explicando o problema quando a config falta,
+em vez de crashar em branco. .env.example documenta as variaveis que
+faltavam e como cadastra-las via 'eas env:create' para builds na nuvem.
+---
+ .env.example                        | 16 ++++++++++++-
+ App.tsx                             | 34 ++++++++++++++++++++++++++--
+ src/services/api/apiClient.ts       | 10 ++++++---
+ src/services/auth/supabaseClient.ts | 35 +++++++++++++++++++----------
+ 4 files changed, 77 insertions(+), 18 deletions(-)
+
+diff --git a/.env.example b/.env.example
+index fde72ca..757f58c 100644
+--- a/.env.example
++++ b/.env.example
+@@ -10,4 +10,18 @@
+ # Para emulador Android: http://10.0.2.2:8000
+ # Para emulador iOS: http://localhost:8000
+ # Para produção no Render.com: https://campo-analise-backend.onrender.com
+-EXPO_PUBLIC_API_URL=http://localhost:8000
+\ No newline at end of file
++EXPO_PUBLIC_API_URL=http://localhost:8000
++
++# Credenciais do projeto Supabase (Project Settings > API no painel do Supabase).
++# Obrigatórias em qualquer build — sem elas o app quebra antes de mostrar o Login.
++EXPO_PUBLIC_SUPABASE_URL=https://SEU-PROJETO.supabase.co
++EXPO_PUBLIC_SUPABASE_ANON_KEY=sua-anon-key-aqui
++
++# ─── BUILDS EAS (preview/production) ─────────────────────────────────────────
++# O .env local NÃO é usado pelo EAS Build na nuvem. Para o APK ter essas
++# variáveis embutidas, cadastre-as como EAS Environment Variables:
++#   eas env:create --scope project --name EXPO_PUBLIC_SUPABASE_URL --value "https://SEU-PROJETO.supabase.co" --environment production --environment preview
++#   eas env:create --scope project --name EXPO_PUBLIC_SUPABASE_ANON_KEY --value "sua-anon-key" --environment production --environment preview
++#   eas env:create --scope project --name EXPO_PUBLIC_API_URL --value "https://campo-analise-backend.onrender.com" --environment production --environment preview
++# Depois disso, rode `eas build` de novo — variáveis já embutidas em um APK
++# antigo não são atualizadas retroativamente.
+\ No newline at end of file
+diff --git a/App.tsx b/App.tsx
+index 052699b..5dae3ca 100644
+--- a/App.tsx
++++ b/App.tsx
+@@ -1,4 +1,5 @@
+ import { useEffect, useState } from 'react';
++import { SafeAreaView, Text, StyleSheet } from 'react-native';
+ import {
+   NavigationContainer,
+   DefaultTheme,
+@@ -20,10 +21,30 @@ import AjustesScreen from './src/screens/Ajustes';
+ import { TemplatesRevisaoScreen } from './src/screens/TemplatesRevisao';
+ import { GerenciarFormulariosScreen } from './src/screens/GerenciarFormularios';
+ import { startAutoSync } from './src/services/sync/SyncService';
+-import { supabase } from './src/services/auth/supabaseClient';
+-import { warmUpBackend } from './src/services/api/apiClient';
++import { supabase, supabaseConfigError } from './src/services/auth/supabaseClient';
++import { warmUpBackend, apiConfigError } from './src/services/api/apiClient';
+ import { colors } from './src/theme';
+ 
++function ConfigErrorScreen({ message }: { message: string }) {
++  return (
++    <SafeAreaView style={configErrorStyles.container}>
++      <Text style={configErrorStyles.title}>Configuração ausente</Text>
++      <Text style={configErrorStyles.message}>{message}</Text>
++      <Text style={configErrorStyles.hint}>
++        Verifique as variáveis de ambiente do build (EXPO_PUBLIC_SUPABASE_URL,
++        EXPO_PUBLIC_SUPABASE_ANON_KEY, EXPO_PUBLIC_API_URL) e gere o APK novamente.
++      </Text>
++    </SafeAreaView>
++  );
++}
++
++const configErrorStyles = StyleSheet.create({
++  container: { flex: 1, justifyContent: 'center', padding: 24, backgroundColor: '#fff' },
++  title: { fontSize: 18, fontWeight: '800', marginBottom: 12, color: '#B00020' },
++  message: { fontSize: 14, marginBottom: 16, color: '#333' },
++  hint: { fontSize: 12, color: '#666' },
++});
++
+ export type MainTabParamList = {
+   'Histórico': undefined;
+   Ajustes: undefined;
+@@ -161,7 +182,12 @@ export default function App() {
+   const [session, setSession] = useState<Session | null>(null);
+   const [authLoading, setAuthLoading] = useState(true);
+ 
++  const configError = supabaseConfigError || apiConfigError;
++
+   useEffect(() => {
++    if (configError) {
++      return;
++    }
+     // Dispara assim que o app abre, antes mesmo de saber se ja tem sessao —
+     // o objetivo e o backend (Render) comecar a acordar do cold start o
+     // quanto antes, em paralelo com a checagem de sessao abaixo.
+@@ -194,6 +220,10 @@ export default function App() {
+     };
+   }, []);
+ 
++  if (configError) {
++    return <ConfigErrorScreen message={configError} />;
++  }
++
+   if (authLoading) {
+     return null;
+   }
+diff --git a/src/services/api/apiClient.ts b/src/services/api/apiClient.ts
+index abd4429..a2e15a1 100644
+--- a/src/services/api/apiClient.ts
++++ b/src/services/api/apiClient.ts
+@@ -11,9 +11,13 @@ function normalize(url: string): string {
+ 
+ export const BASE_URL = normalize(ENV_URL ?? EXTRA_URL ?? 'http://localhost:8000');
+ 
+-if (!__DEV__ && !BASE_URL.startsWith('https://')) {
+-  throw new Error('EXPO_PUBLIC_API_URL deve usar HTTPS em produção.');
+-}
++// Mesmo raciocínio do supabaseClient: não lançar aqui em cima. Um throw no
++// carregamento do módulo mata o app antes de qualquer tela (nem a de Login
++// chega a montar). A UI decide o que fazer com o erro.
++export const apiConfigError: string | null =
++  !__DEV__ && !BASE_URL.startsWith('https://')
++    ? 'EXPO_PUBLIC_API_URL deve usar HTTPS em produção (valor atual: ' + BASE_URL + ').'
++    : null;
+ 
+ if (__DEV__) {
+   console.log('[apiClient] BASE_URL =', BASE_URL);
+diff --git a/src/services/auth/supabaseClient.ts b/src/services/auth/supabaseClient.ts
+index 253588e..981700a 100644
+--- a/src/services/auth/supabaseClient.ts
++++ b/src/services/auth/supabaseClient.ts
+@@ -2,21 +2,32 @@ import { AppState, Platform } from 'react-native';
+ import { createClient } from '@supabase/supabase-js';
+ import AsyncStorage from '@react-native-async-storage/async-storage';
+ 
+-const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL!;
+-const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY!;
++const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
++const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+ 
+-if (!__DEV__ && !SUPABASE_URL.startsWith('https://')) {
+-  throw new Error('EXPO_PUBLIC_SUPABASE_URL deve usar HTTPS em produção.');
+-}
++// Em builds standalone (EAS), variaveis EXPO_PUBLIC_* so entram no bundle se
++// estiverem configuradas no ambiente do build (eas.json "env" ou EAS
++// Environment Variables). Se faltarem, nao lancamos erro aqui em cima —
++// isso derrubava o app antes mesmo de montar a tela de Login. Em vez disso
++// expomos o motivo para a UI decidir o que mostrar.
++export const supabaseConfigError: string | null = !SUPABASE_URL || !SUPABASE_ANON_KEY
++  ? 'EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_ANON_KEY nao definidas neste build.'
++  : !__DEV__ && !SUPABASE_URL.startsWith('https://')
++    ? 'EXPO_PUBLIC_SUPABASE_URL deve usar HTTPS em producao.'
++    : null;
+ 
+-export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+-  auth: {
+-    storage: AsyncStorage,
+-    autoRefreshToken: true,
+-    persistSession: true,
+-    detectSessionInUrl: false,
++export const supabase = createClient(
++  SUPABASE_URL || 'https://placeholder.invalid',
++  SUPABASE_ANON_KEY || 'placeholder',
++  {
++    auth: {
++      storage: AsyncStorage,
++      autoRefreshToken: true,
++      persistSession: true,
++      detectSessionInUrl: false,
++    },
+   },
+-});
++);
+ 
+ if (Platform.OS !== 'web') {
+   AppState.addEventListener('change', (state) => {
+-- 
+2.43.0
+
