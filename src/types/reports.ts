@@ -44,11 +44,6 @@ export interface ReportField {
   was_edited: boolean;
   input_source?: InputSource | null;
   dynamic_type?: FieldType;
-  // Dica original usada pela IA para localizar este campo (copiada de
-  // FormField.extraction_hint no momento da extração). Guardada aqui para
-  // que o refinamento (regenerar campo) reutilize a mesma instrução em vez
-  // de cair no label, que costuma ser mais vago — ver RevisaoScreen.tsx.
-  extraction_hint?: string | null;
 }
 
 export interface Capture {
@@ -61,6 +56,10 @@ export interface Capture {
   // Texto digitado (captures do tipo 'text') — persistido de verdade
   // desde a criação da capture, não só usado na hora da extração.
   text_content?: string;
+  // Transcrição do áudio gerada pelo Groq (Whisper) via /extract/auto.
+  // Persistida junto à capture para exibição no CaptureOriginCard
+  // (Revisão e Histórico) sem precisar de nova chamada ao backend.
+  transcript?: string;
   // Conteúdo do arquivo em base64, só usado para montar o payload de um
   // POST /reports/ (ver SyncService.attachCaptureData) — nunca gravado no
   // AsyncStorage local nem exibido; existe só de passagem até o backend
@@ -133,6 +132,10 @@ export interface AutoExtractionResult {
   dynamic_fields?: DynamicExtractedField[];
   dynamic_items?: DynamicExtractedItem[];
 
+  // Transcrição do áudio gerada pelo Groq (Whisper) no backend.
+  // Presente apenas quando a captura inclui áudio; undefined caso contrário.
+  transcript?: string | null;
+
   error?: string;
   // true = vale a pena chamar /extract/auto de novo com a mesma mídia
   // (ex: sobrecarga momentânea da IA); false = tentar de novo sozinho
@@ -168,9 +171,4 @@ export interface Report {
   updated_at: string;
   synced_at?: string;
   sync_error?: string;         // mensagem da última tentativa de sync que falhou
-  // Frase curta gerada pela IA a partir dos campos, pra identificar o
-  // relatório de relance no card do Histórico (ver SummaryService.ts).
-  // Fica null enquanto não foi gerada ainda ou se a geração falhou — nesse
-  // caso o Histórico volta a listar os campos.
-  ai_summary?: string | null;
 }

@@ -1,4 +1,3 @@
-// src/components/CaptureOriginCard.tsx
 // "De onde veio a extração": mostra a mídia/texto original de cada capture
 // do relatório — a permanência da fonte de origem que a Revisão sempre
 // prometeu (ver README) mas nunca de fato exibia. Prioriza local_path (o
@@ -13,6 +12,7 @@ import {
   Image,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -44,59 +44,148 @@ function formatTime(seconds: number): string {
   return `${m}:${s.toString().padStart(2, '0')}`;
 }
 
-function AudioOriginPlayer({ uri }: { uri: string }) {
+// ─── Barra de progresso interativa ─────────────────────────────────────────
+// Implementada sem @react-native-community/slider (que não está instalado e
+// precisaria de rebuild nativo) — usa Pressable + onLayout para converter
+// a posição do toque na barra em segundos e chamar player.seekTo().
+
+function AudioProgressBar({
+  currentTime,
+  duration,
+  onSeek,
+}: {
+  currentTime: number;
+  duration: number;
+  onSeek: (seconds: number) => void;
+}) {
+  const [barWidth, setBarWidth] = useState(0);
+
+  const progress =
+    duration > 0 && Number.isFinite(duration)
+      ? Math.min(currentTime / duration, 1)
+      : 0;
+
+  function handlePress(x: number) {
+    if (barWidth <= 0 || duration <= 0 || !Number.isFinite(duration)) return;
+    const ratio = Math.max(0, Math.min(x / barWidth, 1));
+    onSeek(ratio * duration);
+  }
+
+  return (
+    <Pressable
+      style={styles.progressBar}
+      onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)}
+      onPress={(e) => handlePress(e.nativeEvent.locationX)}
+    >
+      {/* trilha preenchida */}
+      <View style={[styles.progressFill, { flex: progress }]} />
+      {/* handle */}
+      {progress > 0 && (
+        <View style={styles.progressHandle} />
+      )}
+      {/* trilha restante */}
+      <View style={[styles.progressTrack, { flex: Math.max(1 - progress, 0) }]} />
+    </Pressable>
+  );
+}
+
+// ─── Player de áudio ─────────────────────────────────────────────────────────
+
+function AudioOriginPlayer({
+  uri,
+  transcript,
+}: {
+  uri: string;
+  transcript?: string;
+}) {
   const player = useAudioPlayer({ uri });
   const status = useAudioPlayerStatus(player);
 
-  return (
-    <TouchableOpacity
-      style={styles.audioRow}
-      activeOpacity={0.85}
-      onPress={() =>
-        status.playing
-          ? player.pause()
-          : player.play()
-      }
-    >
-      <View style={styles.audioButton}>
-        <Ionicons
-          name={
-            status.playing
-              ? 'pause'
-              : 'play'
-          }
-          size={18}
-          color={colors.textOnPrimary}
-        />
-      </View>
+  const isPlaying = status.playing;
+  const currentTime = status.currentTime ?? 0;
+  const duration = status.duration ?? 0;
 
-      <View style={styles.audioInfo}>
+  function handleSeek(seconds: number) {
+    player.seekTo(seconds);
+  }
+
+  return (
+    <View style={styles.audioCard}>
+      {/* cabeçalho com label */}
+      <View style={styles.originHeader}>
+        <Ionicons
+          name="mic"
+          size={13}
+          color={colors.textMuted}
+        />
         <Text style={styles.originHeaderText}>
           Gravação por voz
         </Text>
-
-        <Text style={styles.audioTime}>
-          {formatTime(status.currentTime)} /{' '}
-          {formatTime(status.duration)}
-        </Text>
       </View>
-    </TouchableOpacity>
+
+      {/* controles do player */}
+      <View style={styles.audioRow}>
+        <TouchableOpacity
+          style={styles.audioButton}
+          activeOpacity={0.85}
+          onPress={() => (isPlaying ? player.pause() : player.play())}
+        >
+          <Ionicons
+            name={isPlaying ? 'pause' : 'play'}
+            size={18}
+            color={colors.textOnPrimary}
+          />
+        </TouchableOpacity>
+
+        <View style={styles.audioBody}>
+          {/* barra de progresso interativa */}
+          <AudioProgressBar
+            currentTime={currentTime}
+            duration={duration}
+            onSeek={handleSeek}
+          />
+
+          {/* tempo atual / duração total */}
+          <View style={styles.audioTimeRow}>
+            <Text style={styles.audioTime}>
+              {formatTime(currentTime)}
+            </Text>
+            <Text style={styles.audioTime}>
+              {formatTime(duration)}
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      {/* transcrição do áudio (quando disponível) */}
+      {!!transcript && (
+        <View style={styles.transcriptBox}>
+          <View style={styles.transcriptHeader}>
+            <Ionicons
+              name="document-text-outline"
+              size={12}
+              color={colors.textMuted}
+            />
+            <Text style={styles.transcriptLabel}>
+              Transcrição do áudio
+            </Text>
+          </View>
+          <Text style={styles.transcriptText}>
+            {transcript}
+          </Text>
+        </View>
+      )}
+    </View>
   );
 }
+
+// ─── Item de foto ─────────────────────────────────────────────────────────────
 
 function PhotoOriginItem({
   uri,
 }: {
   uri: string;
 }) {
-  /*
-   * A imagem não recebe mais uma altura fixa.
-   *
-   * O aspectRatio começa em 4/3 apenas como fallback enquanto a imagem
-   * carrega. Assim que o React Native informa as dimensões reais da
-   * imagem, usamos width / height para que a caixa mantenha exatamente
-   * a mesma proporção da foto original.
-   */
   const [aspectRatio, setAspectRatio] =
     useState(4 / 3);
 
@@ -142,6 +231,8 @@ function PhotoOriginItem({
     </View>
   );
 }
+
+// ─── Item genérico de captura ─────────────────────────────────────────────────
 
 function CaptureOriginItem({
   capture,
@@ -190,12 +281,17 @@ function CaptureOriginItem({
     }
 
     return (
-      <AudioOriginPlayer uri={uri} />
+      <AudioOriginPlayer
+        uri={uri}
+        transcript={capture.transcript}
+      />
     );
   }
 
   return null;
 }
+
+// ─── Card principal ───────────────────────────────────────────────────────────
 
 export function CaptureOriginCard({
   captures,
@@ -279,12 +375,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
 
-  /*
-   * Container separado para a imagem.
-   *
-   * O fundo ajuda a visualizar fotos que tenham proporções diferentes
-   * da tela, sem precisar cortar ou deformar o conteúdo.
-   */
   photoContainer: {
     width: '100%',
     borderRadius: radius.md,
@@ -292,10 +382,6 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceAlt,
   },
 
-  /*
-   * A largura ocupa todo o card e a altura é calculada através do
-   * aspectRatio da própria fotografia.
-   */
   photo: {
     width: '100%',
     backgroundColor: colors.surfaceAlt,
@@ -315,13 +401,19 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
 
+  // ─── Player de áudio ──────────────────────────────────────────────────
+
+  audioCard: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    gap: spacing.sm,
+  },
+
   audioRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    backgroundColor: colors.surfaceAlt,
-    borderRadius: radius.md,
-    padding: spacing.md,
   },
 
   audioButton: {
@@ -331,15 +423,83 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
+    flexShrink: 0,
   },
 
-  audioInfo: {
+  audioBody: {
     flex: 1,
+    gap: 4,
+  },
+
+  // ─── Barra de progresso ───────────────────────────────────────────────
+
+  progressBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    height: 20,
+    paddingVertical: 7,
+  },
+
+  progressFill: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.primary,
+  },
+
+  progressHandle: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: colors.primary,
+    marginHorizontal: -6,
+    zIndex: 1,
+  },
+
+  progressTrack: {
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.border,
+  },
+
+  audioTimeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
   },
 
   audioTime: {
-    fontSize: 12,
+    fontSize: 11,
     color: colors.textSecondary,
-    marginTop: 2,
+  },
+
+  // ─── Transcrição ──────────────────────────────────────────────────────
+
+  transcriptBox: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.sm,
+    padding: spacing.sm,
+    borderLeftWidth: 2,
+    borderLeftColor: colors.primary,
+    marginTop: spacing.xs,
+  },
+
+  transcriptHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 4,
+  },
+
+  transcriptLabel: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+  },
+
+  transcriptText: {
+    fontSize: 13,
+    color: colors.textPrimary,
+    lineHeight: 19,
   },
 });

@@ -25,7 +25,6 @@ import { RootStackParamList } from '../../App';
 import { KeyboardAvoidingScreen } from '../components/KeyboardAvoidingScreen';
 import { extractFields } from '../services/api/ai/ExtractionService';
 import { autoExtractCombined, StagedPhoto } from '../services/api/ai/AutoExtractionService';
-import { summarizeReport } from '../services/api/ai/SummaryService';
 import { checkHealth } from '../services/api/apiClient';
 import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
@@ -69,6 +68,11 @@ export default function CapturaScreen() {
     mimeType: string;
   } | null>(null);
 
+  // Transcrição provisória do áudio staged — preenchida pelo backend após
+  // /extract/auto e exibida no chip "Gravação anexada" como prévia antes
+  // de navegar para a Revisão.
+  const [stagedTranscript, setStagedTranscript] = useState<string | null>(null);
+
   const [stagedText, setStagedText] = useState('');
   const [purpose, setPurpose] = useState<ExtractionPurpose | null>(null);
   const [customInstruction, setCustomInstruction] = useState('');
@@ -80,11 +84,6 @@ export default function CapturaScreen() {
     stagedPhotos.length > 0 ||
     !!stagedAudio ||
     stagedText.trim().length > 0;
-
-  // No modo automático, a captura acontece em duas etapas visuais:
-  // 1) adicionar a fonte; 2) definir a finalidade e enviar para análise.
-  // A finalidade só aparece depois que existe alguma fonte anexada.
-  const captureStep = hasStaged ? 2 : 1;
 
   // Acorda o backend assim que a tela abre — se o plano gratuito do Render
   // estiver "dormindo", o cold start (30-50s) acontece enquanto a pessoa
@@ -99,6 +98,7 @@ export default function CapturaScreen() {
   function clearStaged() {
     setStagedPhotos([]);
     setStagedAudio(null);
+    setStagedTranscript(null);
     setStagedText('');
     setPurpose(null);
     setCustomInstruction('');
@@ -160,10 +160,6 @@ export default function CapturaScreen() {
       created_at: now,
       updated_at: now,
     };
-
-    // Best-effort: se a IA não conseguir gerar o resumo (rede, timeout),
-    // ai_summary fica null e o card do Histórico volta a listar os campos.
-    report.ai_summary = await summarizeReport(report);
 
     await StorageService.upsertReport(report);
 
@@ -266,10 +262,6 @@ export default function CapturaScreen() {
       created_at: now,
       updated_at: now,
     };
-
-    // Best-effort: se a IA não conseguir gerar o resumo (rede, timeout),
-    // ai_summary fica null e o card do Histórico volta a listar os campos.
-    report.ai_summary = await summarizeReport(report);
 
     await StorageService.upsertReport(report);
 
@@ -699,8 +691,24 @@ export default function CapturaScreen() {
               : null,
         });
 
+      // Armazena a transcrição provisoriamente para exibição no chip de
+      // "Gravação anexada" enquanto a navegação não acontece.
+      if (auto.transcript) {
+        setStagedTranscript(auto.transcript);
+      }
+
+      // Enriquece a capture de voz com a transcrição devolvida pelo backend
+      // (gerada pelo Groq durante /extract/auto) para que apareça no player
+      // dentro do CaptureOriginCard (Revisão e Histórico).
+      const capturesWithTranscript: Capture[] = captures.map((c) => {
+        if (c.type === 'voice' && auto.transcript) {
+          return { ...c, transcript: auto.transcript };
+        }
+        return c;
+      });
+
       await finishAutoCapture(
-        captures,
+        capturesWithTranscript,
         auto,
         () =>
           submitStagedCapture(),
@@ -980,9 +988,7 @@ export default function CapturaScreen() {
               style={shared.subtitle}
             >
               {isAutoMode
-                ? captureStep === 1
-                  ? 'Adicione uma foto, voz ou texto para começar.'
-                  : 'Agora defina a finalidade e envie a informação para análise.'
+                ? 'Junte foto, voz e/ou texto sobre a mesma informação — a IA organiza tudo'
                 : 'Grave por voz ou tire uma foto para começar'}
             </Text>
           </View>
@@ -1006,20 +1012,18 @@ export default function CapturaScreen() {
           {isAutoMode &&
             hasStaged &&
             !textMode && (
-              <>
-                <View style={local.stepHeader}>
-                  <View style={local.stepNumberActive}>
-                    <Text style={local.stepNumberTextActive}>1</Text>
-                  </View>
-                  <View style={local.stepHeaderText}>
-                    <Text style={local.stepTitle}>Fonte adicionada</Text>
-                    <Text style={local.stepSubtitle}>Confira o conteúdo antes de continuar.</Text>
-                  </View>
-                  <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
-                </View>
-
-                <View style={local.stagedSection}>
-                  <Text style={local.stagedLabel}>Conteúdo da captura</Text>
+              <View
+                style={
+                  local.stagedSection
+                }
+              >
+                <Text
+                  style={
+                    local.stagedLabel
+                  }
+                >
+                  Anexado nesta captura
+                </Text>
 
                 {stagedPhotos.length >
                   0 && (
@@ -1078,46 +1082,67 @@ export default function CapturaScreen() {
                 )}
 
                 {stagedAudio && (
-                  <View
-                    style={
-                      local.stagedChip
-                    }
-                  >
-                    <Ionicons
-                      name="mic"
-                      size={14}
-                      color={
-                        colors.primary
-                      }
-                    />
-
-                    <Text
+                  <View style={local.stagedAudioBlock}>
+                    {/* chip de gravação + botão de remover */}
+                    <View
                       style={
-                        local.stagedChipText
+                        local.stagedChip
                       }
-                    >
-                      Gravação anexada
-                    </Text>
-
-                    <TouchableOpacity
-                      onPress={() =>
-                        setStagedAudio(
-                          null,
-                        )
-                      }
-                      disabled={
-                        isProcessing
-                      }
-                      hitSlop={8}
                     >
                       <Ionicons
-                        name="close-circle"
-                        size={16}
+                        name="mic"
+                        size={14}
                         color={
-                          colors.textMuted
+                          colors.primary
                         }
                       />
-                    </TouchableOpacity>
+
+                      <Text
+                        style={
+                          local.stagedChipText
+                        }
+                      >
+                        Gravação anexada
+                      </Text>
+
+                      <TouchableOpacity
+                        onPress={() => {
+                          setStagedAudio(null);
+                          setStagedTranscript(null);
+                        }}
+                        disabled={
+                          isProcessing
+                        }
+                        hitSlop={8}
+                      >
+                        <Ionicons
+                          name="close-circle"
+                          size={16}
+                          color={
+                            colors.textMuted
+                          }
+                        />
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* prévia da transcrição (disponível após envio) */}
+                    {!!stagedTranscript && (
+                      <View style={local.stagedTranscriptBox}>
+                        <View style={local.stagedTranscriptHeader}>
+                          <Ionicons
+                            name="document-text-outline"
+                            size={11}
+                            color={colors.textMuted}
+                          />
+                          <Text style={local.stagedTranscriptLabel}>
+                            Transcrição
+                          </Text>
+                        </View>
+                        <Text style={local.stagedTranscriptText} numberOfLines={4}>
+                          {stagedTranscript}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                 )}
 
@@ -1165,22 +1190,13 @@ export default function CapturaScreen() {
                   </View>
                 )}
 
-                </View>
-
-                <View style={local.stepHeader}>
-                  <View style={local.stepNumberActive}>
-                    <Text style={local.stepNumberTextActive}>2</Text>
-                  </View>
-                  <View style={local.stepHeaderText}>
-                    <Text style={local.stepTitle}>Defina a finalidade</Text>
-                    <Text style={local.stepSubtitle}>Diga à IA o que você quer obter dessa informação.</Text>
-                  </View>
-                </View>
-
-                <View style={local.purposeSection}>
-                  <Text style={local.purposeLabel}>
-                    Qual é a finalidade? (opcional)
-                  </Text>
+                <Text
+                  style={
+                    local.purposeLabel
+                  }
+                >
+                  Qual é a finalidade? (opcional)
+                </Text>
 
                 <View
                   style={
@@ -1314,24 +1330,10 @@ export default function CapturaScreen() {
                     </>
                   )}
                 </TouchableOpacity>
-                </View>
-              </>
+              </View>
             )}
 
           {!textMode && (
-            <>
-              {isAutoMode && !hasStaged && (
-                <View style={local.stepHeader}>
-                  <View style={local.stepNumberActive}>
-                    <Text style={local.stepNumberTextActive}>1</Text>
-                  </View>
-                  <View style={local.stepHeaderText}>
-                    <Text style={local.stepTitle}>Adicione uma fonte</Text>
-                    <Text style={local.stepSubtitle}>Use foto, voz ou texto para começar.</Text>
-                  </View>
-                </View>
-              )}
-
             <View
               style={
                 local.actionsRow
@@ -1521,7 +1523,6 @@ export default function CapturaScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
-            </>
           )}
 
           {textMode && (
@@ -1889,55 +1890,6 @@ const local = StyleSheet.create({
     marginBottom: 6,
   },
 
-  stepHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    marginBottom: spacing.md,
-  },
-
-  stepNumberActive: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  stepNumberTextActive: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.textOnPrimary,
-  },
-
-  stepHeaderText: {
-    flex: 1,
-  },
-
-  stepTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: colors.textPrimary,
-  },
-
-  stepSubtitle: {
-    fontSize: 12,
-    lineHeight: 17,
-    color: colors.textSecondary,
-    marginTop: 2,
-  },
-
-  purposeSection: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.lg,
-    marginBottom: spacing.xl,
-    ...shadows.sm,
-  },
-
   actionsRow: {
     flexDirection: 'row',
     gap: spacing.md,
@@ -2103,6 +2055,10 @@ const local = StyleSheet.create({
     backgroundColor: colors.border,
   },
 
+  stagedAudioBlock: {
+    gap: spacing.xs,
+  },
+
   stagedRemoveBadge: {
     position: 'absolute',
     top: -6,
@@ -2134,6 +2090,33 @@ const local = StyleSheet.create({
     fontWeight: '600',
     color: colors.textPrimary,
     flexShrink: 1,
+  },
+
+  stagedTranscriptBox: {
+    marginTop: spacing.xs,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceAlt,
+    maxWidth: '100%',
+  },
+
+  stagedTranscriptHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 3,
+  },
+
+  stagedTranscriptLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textMuted,
+  },
+
+  stagedTranscriptText: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.textSecondary,
   },
 
   purposeLabel: {
