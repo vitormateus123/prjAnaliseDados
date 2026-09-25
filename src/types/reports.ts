@@ -44,6 +44,11 @@ export interface ReportField {
   was_edited: boolean;
   input_source?: InputSource | null;
   dynamic_type?: FieldType;
+  // Dica original usada pela IA para localizar este campo (copiada de
+  // FormField.extraction_hint no momento da extração). Guardada aqui para
+  // que o refinamento (regenerar campo) reutilize a mesma instrução em vez
+  // de cair no label, que costuma ser mais vago — ver RevisaoScreen.tsx.
+  extraction_hint?: string | null;
 }
 
 export interface Capture {
@@ -171,4 +176,9 @@ export interface Report {
   updated_at: string;
   synced_at?: string;
   sync_error?: string;         // mensagem da última tentativa de sync que falhou
+  // Frase curta gerada pela IA a partir dos campos, pra identificar o
+  // relatório de relance no card do Histórico (ver SummaryService.ts).
+  // Fica null enquanto não foi gerada ainda ou se a geração falhou — nesse
+  // caso o Histórico volta a listar os campos.
+  ai_summary?: string | null;
 }

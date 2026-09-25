@@ -21,10 +21,13 @@ import NetInfo from '@react-native-community/netinfo';
 import * as Crypto from 'expo-crypto';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
+import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { RootStackParamList } from '../../App';
 import { KeyboardAvoidingScreen } from '../components/KeyboardAvoidingScreen';
+import { formatTime, AudioProgressBar } from '../components/AudioProgressBar';
 import { extractFields } from '../services/api/ai/ExtractionService';
 import { autoExtractCombined, StagedPhoto } from '../services/api/ai/AutoExtractionService';
+import { summarizeReport } from '../services/api/ai/SummaryService';
 import { checkHealth } from '../services/api/apiClient';
 import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
@@ -41,6 +44,47 @@ import {
 import { PURPOSE_OPTIONS } from '../constants/extractionPurpose';
 import { styles as shared } from '../styles';
 import { colors, radius, shadows, spacing } from '../theme';
+
+// Player interativo do áudio anexado, ainda na tela de Captura — permite
+// ouvir a gravação antes de enviar pra análise (mesmo padrão de barra de
+// progresso do CaptureOriginCard, ver AudioProgressBar).
+function StagedAudioPlayer({ uri }: { uri: string }) {
+  const player = useAudioPlayer({ uri });
+  const status = useAudioPlayerStatus(player);
+
+  const isPlaying = status.playing;
+  const currentTime = status.currentTime ?? 0;
+  const duration = status.duration ?? 0;
+
+  return (
+    <View style={local.stagedAudioPlayerRow}>
+      <TouchableOpacity
+        style={local.stagedAudioButton}
+        activeOpacity={0.85}
+        onPress={() => (isPlaying ? player.pause() : player.play())}
+      >
+        <Ionicons
+          name={isPlaying ? 'pause' : 'play'}
+          size={16}
+          color={colors.textOnPrimary}
+        />
+      </TouchableOpacity>
+
+      <View style={local.stagedAudioBody}>
+        <AudioProgressBar
+          currentTime={currentTime}
+          duration={duration}
+          onSeek={(seconds) => player.seekTo(seconds)}
+        />
+
+        <View style={local.stagedAudioTimeRow}>
+          <Text style={local.stagedAudioTime}>{formatTime(currentTime)}</Text>
+          <Text style={local.stagedAudioTime}>{formatTime(duration)}</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
 
 // A entrada principal é sempre livre: foto(s), áudio e texto podem ser
 // combinados e a IA decide internamente como estruturar a informação.
@@ -161,6 +205,10 @@ export default function CapturaScreen() {
       updated_at: now,
     };
 
+    // Best-effort: se a IA não conseguir gerar o resumo (rede, timeout),
+    // ai_summary fica null e o card do Histórico volta a listar os campos.
+    report.ai_summary = await summarizeReport(report);
+
     await StorageService.upsertReport(report);
 
     clearStaged();
@@ -262,6 +310,10 @@ export default function CapturaScreen() {
       created_at: now,
       updated_at: now,
     };
+
+    // Best-effort: se a IA não conseguir gerar o resumo (rede, timeout),
+    // ai_summary fica null e o card do Histórico volta a listar os campos.
+    report.ai_summary = await summarizeReport(report);
 
     await StorageService.upsertReport(report);
 
@@ -700,9 +752,15 @@ export default function CapturaScreen() {
       // Enriquece a capture de voz com a transcrição devolvida pelo backend
       // (gerada pelo Groq durante /extract/auto) para que apareça no player
       // dentro do CaptureOriginCard (Revisão e Histórico).
+      //
+      // Grava tanto em `transcript` (exibição imediata, antes de qualquer
+      // sync) quanto em `text_content` — o backend só conhece text_content
+      // no schema de captures (ver reports.py), então é esse campo que de
+      // fato sobrevive ao POST /reports/ e volta ao reabrir o relatório
+      // depois de sincronizado (Histórico, outro aparelho etc.).
       const capturesWithTranscript: Capture[] = captures.map((c) => {
         if (c.type === 'voice' && auto.transcript) {
-          return { ...c, transcript: auto.transcript };
+          return { ...c, transcript: auto.transcript, text_content: auto.transcript };
         }
         return c;
       });
@@ -1124,6 +1182,9 @@ export default function CapturaScreen() {
                         />
                       </TouchableOpacity>
                     </View>
+
+                    {/* barra de progresso interativa, para ouvir antes de enviar */}
+                    <StagedAudioPlayer uri={stagedAudio.uri} />
 
                     {/* prévia da transcrição (disponível após envio) */}
                     {!!stagedTranscript && (
@@ -2057,6 +2118,38 @@ const local = StyleSheet.create({
 
   stagedAudioBlock: {
     gap: spacing.xs,
+  },
+
+  stagedAudioPlayerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: 2,
+  },
+
+  stagedAudioButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+
+  stagedAudioBody: {
+    flex: 1,
+    gap: 2,
+  },
+
+  stagedAudioTimeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+
+  stagedAudioTime: {
+    fontSize: 11,
+    color: colors.textSecondary,
   },
 
   stagedRemoveBadge: {

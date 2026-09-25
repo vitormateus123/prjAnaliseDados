@@ -11,12 +11,14 @@ from app.schemas.extraction import (
     AutoExtractRequest, AutoExtractResponse, ExtractedItem,
     DynamicExtractedField, DynamicExtractedItem, EXTRACTION_PURPOSES,
     RefineRequest, RefineResponse,
+    SummarizeRequest, SummarizeResponse,
 )
 from app.schemas.discovery import DiscoveryResult, DiscoveredField
 from app.services import gemini_service, groq_service
 from app.services.supabase_service import get_client
 from app.api.routes.templates import FIELD_TYPES
 from app.core.config import settings
+from app.security.auth import get_current_user
 
 logger = logging.getLogger("extract")
 router = APIRouter()
@@ -316,7 +318,18 @@ async def extract_auto(payload: AutoExtractRequest):
         # ─── match="existing": reaproveita um formulário já cadastrado ───
         if match == "existing" and result.get("template_id"):
             template_id = result["template_id"]
-            new_field_keys = _add_suggested_fields(template_id, result.get("suggested_fields") or [])
+
+            # Somente administradores podem persistir campos sugeridos pela IA.
+            # Usuários comuns continuam podendo usar a extração normalmente,
+            # mas a execução não altera a estrutura do template.
+            user = get_current_user()
+            if user.role == "admin":
+                new_field_keys = _add_suggested_fields(
+                    template_id,
+                    result.get("suggested_fields") or [],
+                )
+            else:
+                new_field_keys = []
             template_row_resp = (
                 get_client().table("form_templates")
                 .select("name,has_items")
@@ -486,3 +499,26 @@ async def refine_fields(payload: RefineRequest):
             error=str(e),
             retryable=True,
         )
+
+
+# ─── ENDPOINT DE RESUMO ───────────────────────────────────────────────────
+# Gera a frase curta exibida no card do Histórico (ver ai_summary em
+# types/reports.ts e SummaryService.ts). Recebe só os campos já extraídos,
+# em texto — nunca mídia — então é uma chamada rápida e barata comparada aos
+# outros endpoints de /extract. Best-effort por natureza: o app já trata
+# ai_summary ausente voltando a listar os campos no card, então aqui
+# devolvemos success=False em vez de propagar erro HTTP.
+
+@router.post("/summarize", response_model=SummarizeResponse)
+async def summarize_report(payload: SummarizeRequest):
+    if not payload.fields:
+        return SummarizeResponse(success=False, error="Nenhum campo informado.")
+
+    try:
+        summary = await gemini_service.summarize_report(
+            payload.fields, payload.context_label, payload.purpose,
+        )
+        return SummarizeResponse(success=True, summary=summary)
+    except Exception as e:
+        logger.exception("Falha ao gerar resumo do relatório")
+        return SummarizeResponse(success=False, error=str(e))

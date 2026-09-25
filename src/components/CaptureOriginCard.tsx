@@ -12,7 +12,6 @@ import {
   Image,
   StyleSheet,
   TouchableOpacity,
-  Pressable,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
@@ -20,6 +19,7 @@ import {
   useAudioPlayerStatus,
 } from 'expo-audio';
 import { Capture } from '../types/reports';
+import { formatTime, AudioProgressBar } from './AudioProgressBar';
 import {
   colors,
   radius,
@@ -31,62 +31,6 @@ function captureSourceUri(
   capture: Capture,
 ): string | undefined {
   return capture.local_path || capture.file_url;
-}
-
-function formatTime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) {
-    return '0:00';
-  }
-
-  const m = Math.floor(seconds / 60);
-  const s = Math.floor(seconds % 60);
-
-  return `${m}:${s.toString().padStart(2, '0')}`;
-}
-
-// ─── Barra de progresso interativa ─────────────────────────────────────────
-// Implementada sem @react-native-community/slider (que não está instalado e
-// precisaria de rebuild nativo) — usa Pressable + onLayout para converter
-// a posição do toque na barra em segundos e chamar player.seekTo().
-
-function AudioProgressBar({
-  currentTime,
-  duration,
-  onSeek,
-}: {
-  currentTime: number;
-  duration: number;
-  onSeek: (seconds: number) => void;
-}) {
-  const [barWidth, setBarWidth] = useState(0);
-
-  const progress =
-    duration > 0 && Number.isFinite(duration)
-      ? Math.min(currentTime / duration, 1)
-      : 0;
-
-  function handlePress(x: number) {
-    if (barWidth <= 0 || duration <= 0 || !Number.isFinite(duration)) return;
-    const ratio = Math.max(0, Math.min(x / barWidth, 1));
-    onSeek(ratio * duration);
-  }
-
-  return (
-    <Pressable
-      style={styles.progressBar}
-      onLayout={(e) => setBarWidth(e.nativeEvent.layout.width)}
-      onPress={(e) => handlePress(e.nativeEvent.locationX)}
-    >
-      {/* trilha preenchida */}
-      <View style={[styles.progressFill, { flex: progress }]} />
-      {/* handle */}
-      {progress > 0 && (
-        <View style={styles.progressHandle} />
-      )}
-      {/* trilha restante */}
-      <View style={[styles.progressTrack, { flex: Math.max(1 - progress, 0) }]} />
-    </Pressable>
-  );
 }
 
 // ─── Player de áudio ─────────────────────────────────────────────────────────
@@ -280,10 +224,14 @@ function CaptureOriginItem({
       return null;
     }
 
+    // `transcript` é o campo usado logo após a captura (antes de qualquer
+    // sync); `text_content` é o que efetivamente sobrevive ao POST
+    // /reports/ e volta do backend ao reabrir o relatório depois de
+    // sincronizado — ver Captura.tsx (capturesWithTranscript).
     return (
       <AudioOriginPlayer
         uri={uri}
-        transcript={capture.transcript}
+        transcript={capture.transcript ?? capture.text_content}
       />
     );
   }
@@ -429,36 +377,6 @@ const styles = StyleSheet.create({
   audioBody: {
     flex: 1,
     gap: 4,
-  },
-
-  // ─── Barra de progresso ───────────────────────────────────────────────
-
-  progressBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    height: 20,
-    paddingVertical: 7,
-  },
-
-  progressFill: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.primary,
-  },
-
-  progressHandle: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: colors.primary,
-    marginHorizontal: -6,
-    zIndex: 1,
-  },
-
-  progressTrack: {
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: colors.border,
   },
 
   audioTimeRow: {

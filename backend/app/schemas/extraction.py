@@ -181,6 +181,12 @@ class AutoExtractResponse(BaseModel):
     error: str | None = None
     retryable: bool = False
 
+    # Transcrição do áudio gerada pelo Groq (Whisper) — ver extract_auto em
+    # routes/extract.py. Presente só quando a captura incluiu áudio; o app
+    # persiste isso na capture (Capture.transcript) pra exibir no
+    # CaptureOriginCard sem precisar de nova chamada.
+    transcript: str | None = None
+
 
 # ─── refinamento: re-extração de campos específicos ──────────────────────────
 # Usado pelo endpoint POST /extract/refine — o app envia as capturas originais
