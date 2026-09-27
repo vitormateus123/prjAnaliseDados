@@ -1,14 +1,15 @@
 // src/components/ConfidenceBadge.tsx
 import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { colors, radius } from '../theme';
 
 interface Props {
   confidence?: number; // 0-1
+  onPress?: () => void;
 }
 
-export function ConfidenceBadge({ confidence }: Props) {
+export function ConfidenceBadge({ confidence, onPress }: Props) {
   if (confidence === undefined) return null;
 
   const pct = Math.round(confidence * 100);
@@ -20,10 +21,19 @@ export function ConfidenceBadge({ confidence }: Props) {
   const iconColor = isHigh ? colors.success : isMedium ? colors.warning : colors.danger;
 
   return (
-    <View style={[styles.badge, tone]}>
-      <Ionicons name={icon} size={11} color={iconColor} />
-      <Text style={[styles.text, textTone]}>{pct}%</Text>
-    </View>
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.7}
+      hitSlop={4}
+      accessible={!!onPress}
+      accessibilityLabel={`Confiança da IA: ${pct}%`}
+      accessibilityHint={onPress ? 'Toque para ver o significado' : undefined}
+    >
+      <View style={[styles.badge, tone]}>
+        <Ionicons name={icon} size={11} color={iconColor} />
+        <Text style={[styles.text, textTone]}>{pct}%</Text>
+      </View>
+    </TouchableOpacity>
   );
 }
 

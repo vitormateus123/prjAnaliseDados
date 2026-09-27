@@ -7,7 +7,7 @@ import { View, Text, TouchableOpacity, StyleSheet, TextInput } from 'react-nativ
 import * as Crypto from 'expo-crypto';
 import { Ionicons } from '@expo/vector-icons';
 import { ReportField, ReportItem } from '../types/reports';
-import { emptyFieldValue, parseFieldValue } from '../utils/fieldValue';
+import { emptyFieldValue, parseFieldValue, fieldValueToString } from '../utils/fieldValue';
 import { DynamicFields } from './DynamicFields';
 import { colors, radius, shadows, spacing } from '../theme';
 
@@ -26,13 +26,15 @@ interface ItemsListProps {
 function emptyItemFrom(template: ReportItem): ReportItem {
   return {
     id: Crypto.randomUUID(),
-    fields: template.fields.map((f) => ({
-      ...f,
-      field_value: emptyFieldValue(f.field_value.type),
-      confidence: undefined,
-      source: 'manual',
-      was_edited: false,
-    })),
+    fields: template.fields
+      .filter((f) => fieldValueToString(f.field_value).trim() !== '')
+      .map((f) => ({
+        ...f,
+        field_value: emptyFieldValue(f.field_value.type),
+        confidence: undefined,
+        source: 'manual' as const,
+        was_edited: false,
+      })),
   };
 }
 
