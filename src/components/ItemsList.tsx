@@ -2,10 +2,11 @@
 // Fase 4: UI de lista de itens na tela de Revisão — adicionar, remover e
 // editar cada item de um relatório com has_items=true (ex: cada produto
 // identificado numa foto de prateleira).
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import { useState } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, TextInput } from 'react-native';
 import * as Crypto from 'expo-crypto';
 import { Ionicons } from '@expo/vector-icons';
-import { ReportItem } from '../types/reports';
+import { ReportField, ReportItem } from '../types/reports';
 import { emptyFieldValue, parseFieldValue } from '../utils/fieldValue';
 import { DynamicFields } from './DynamicFields';
 import { colors, radius, shadows, spacing } from '../theme';
@@ -13,6 +14,10 @@ import { colors, radius, shadows, spacing } from '../theme';
 interface ItemsListProps {
   items: ReportItem[];
   onChange: (items: ReportItem[]) => void;
+  canRefine?: boolean;
+  onRemoveField?: (itemIndex: number, key: string) => void;
+  onRegenerateField?: (itemIndex: number, key: string, field?: ReportField) => void;
+  regeneratingKey?: string | null;
 }
 
 /** Novo item vazio, usando o primeiro item existente como molde de quais
@@ -31,7 +36,17 @@ function emptyItemFrom(template: ReportItem): ReportItem {
   };
 }
 
-export function ItemsList({ items, onChange }: ItemsListProps) {
+export function ItemsList({
+  items,
+  onChange,
+  canRefine = false,
+  onRemoveField,
+  onRegenerateField,
+  regeneratingKey,
+}: ItemsListProps) {
+  const [newFieldLabels, setNewFieldLabels] = useState<Record<number, string>>({});
+  const [newFieldValues, setNewFieldValues] = useState<Record<number, string>>({});
+
   function handleFieldChange(itemIndex: number, key: string, rawValue: string) {
     const updated = items.map((item, idx) => {
       if (idx !== itemIndex) return item;
@@ -60,6 +75,85 @@ export function ItemsList({ items, onChange }: ItemsListProps) {
     onChange([...items, emptyItemFrom(items[0])]);
   }
 
+  function handleRemoveField(itemIndex: number, key: string) {
+    onRemoveField?.(itemIndex, key);
+  }
+
+  function handleRegenerateField(itemIndex: number, key: string) {
+    onRegenerateField?.(itemIndex, key);
+  }
+
+  function handleAddField(itemIndex: number) {
+    const label = (newFieldLabels[itemIndex] ?? '').trim();
+    if (!label) return;
+    const value = newFieldValues[itemIndex] ?? '';
+    const updated = items.map((item, idx) => {
+      if (idx !== itemIndex) return item;
+      const keyBase = label
+        .toLocaleLowerCase('pt-BR')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_|_$/g, '') || 'informacao';
+      const key = item.fields.some((f) => f.key === keyBase)
+        ? `${keyBase}_${Date.now()}`
+        : keyBase;
+      const newField: ReportField = {
+        form_field_id: null,
+        key,
+        label,
+        field_value: { type: 'text', value },
+        source: 'manual',
+        was_edited: true,
+        dynamic_type: 'text',
+      };
+      return {
+        ...item,
+        fields: [...item.fields, newField],
+      };
+    });
+    onChange(updated);
+    setNewFieldLabels((prev) => ({ ...prev, [itemIndex]: '' }));
+    setNewFieldValues((prev) => ({ ...prev, [itemIndex]: '' }));
+  }
+
+  function handleAddFieldAndRefine(itemIndex: number) {
+    const label = (newFieldLabels[itemIndex] ?? '').trim();
+    if (!label) return;
+    const updated = items.map((item, idx) => {
+      if (idx !== itemIndex) return item;
+      const keyBase = label
+        .toLocaleLowerCase('pt-BR')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_|_$/g, '') || 'informacao';
+      const key = item.fields.some((f) => f.key === keyBase)
+        ? `${keyBase}_${Date.now()}`
+        : keyBase;
+      const newField: ReportField = {
+        form_field_id: null,
+        key,
+        label,
+        field_value: { type: 'text', value: '' },
+        source: 'manual',
+        was_edited: true,
+        dynamic_type: 'text',
+      };
+      return {
+        ...item,
+        fields: [...item.fields, newField],
+      };
+    });
+    onChange(updated);
+    setNewFieldLabels((prev) => ({ ...prev, [itemIndex]: '' }));
+    setNewFieldValues((prev) => ({ ...prev, [itemIndex]: '' }));
+    if (onRegenerateField && updated[itemIndex]) {
+      const newField = updated[itemIndex].fields[updated[itemIndex].fields.length - 1];
+      onRegenerateField(itemIndex, newField.key, newField);
+    }
+  }
+
   return (
     <View style={{ marginBottom: spacing.lg }}>
       <View style={local.sectionHeader}>
@@ -85,7 +179,55 @@ export function ItemsList({ items, onChange }: ItemsListProps) {
           <DynamicFields
             fields={item.fields}
             onChange={(key, rawValue) => handleFieldChange(idx, key, rawValue)}
+            onRemove={onRemoveField ? (key) => handleRemoveField(idx, key) : undefined}
+            onRegenerate={canRefine && onRegenerateField ? (key) => handleRegenerateField(idx, key) : undefined}
+            regeneratingKey={regeneratingKey}
+            fieldKeyPrefix={`item_${idx}`}
           />
+
+          <View style={local.addFieldArea}>
+            <Text style={local.addFieldTitle}>Adicionar informação</Text>
+            <TextInput
+              style={local.addFieldInput}
+              value={newFieldLabels[idx] ?? ''}
+              onChangeText={(text) => setNewFieldLabels((prev) => ({ ...prev, [idx]: text }))}
+              placeholder="Nome da informação"
+              placeholderTextColor={colors.textMuted}
+            />
+            <TextInput
+              style={local.addFieldInput}
+              value={newFieldValues[idx] ?? ''}
+              onChangeText={(text) => setNewFieldValues((prev) => ({ ...prev, [idx]: text }))}
+              placeholder="Valor (deixe vazio para a IA preencher)"
+              placeholderTextColor={colors.textMuted}
+            />
+            <View style={local.addFieldButtons}>
+              <TouchableOpacity
+                style={[local.addFieldButton, !(newFieldLabels[idx] ?? '').trim() && local.addFieldButtonDisabled]}
+                onPress={() => handleAddField(idx)}
+                disabled={!(newFieldLabels[idx] ?? '').trim()}
+                activeOpacity={0.8}
+              >
+                <Ionicons name="add-circle-outline" size={15} color={colors.primary} />
+                <Text style={local.addFieldButtonText}>Adicionar</Text>
+              </TouchableOpacity>
+
+              {canRefine && onRegenerateField && (
+                <TouchableOpacity
+                  style={[
+                    local.addFieldButtonAI,
+                    !(newFieldLabels[idx] ?? '').trim() && local.addFieldButtonDisabled,
+                  ]}
+                  onPress={() => handleAddFieldAndRefine(idx)}
+                  disabled={!(newFieldLabels[idx] ?? '').trim()}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="sparkles-outline" size={15} color={colors.primary} />
+                  <Text style={local.addFieldButtonText}>IA preencher</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+          </View>
         </View>
       ))}
 
@@ -119,4 +261,30 @@ const local = StyleSheet.create({
     borderRadius: radius.md, marginTop: spacing.md, height: 48,
   },
   addButtonText: { color: colors.primary, fontWeight: '700', fontSize: 14 },
+  // ─── seção adicionar campo ────────────────────────────────────────────────
+  addFieldArea: {
+    borderTopWidth: 1, borderTopColor: colors.border,
+    marginTop: spacing.md, paddingTop: spacing.md, gap: spacing.sm,
+  },
+  addFieldTitle: { fontSize: 13, fontWeight: '700', color: colors.textPrimary },
+  addFieldInput: {
+    backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.border,
+    borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 8,
+    color: colors.textPrimary, fontSize: 13,
+  },
+  addFieldButtons: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap' },
+  addFieldButton: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    alignSelf: 'flex-start', backgroundColor: colors.primaryLight,
+    borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 8,
+  },
+  addFieldButtonAI: {
+    flexDirection: 'row', alignItems: 'center', gap: 5,
+    alignSelf: 'flex-start',
+    backgroundColor: colors.primaryLight,
+    borderRadius: radius.sm, paddingHorizontal: spacing.md, paddingVertical: 8,
+    borderWidth: 1, borderColor: colors.primary,
+  },
+  addFieldButtonDisabled: { opacity: 0.4 },
+  addFieldButtonText: { color: colors.primary, fontWeight: '700', fontSize: 12 },
 });

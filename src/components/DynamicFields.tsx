@@ -19,6 +19,7 @@ interface DynamicFieldsProps {
   onRegenerate?: (key: string) => void;  // pede à IA para re-extrair este campo
   regeneratingKey?: string | null;        // key do campo que está sendo refinado no momento
   showEmptyMessage?: boolean;
+  fieldKeyPrefix?: string;                // prefixo para distinguir campos de itens diferentes
 }
 
 export function DynamicFields({
@@ -28,6 +29,7 @@ export function DynamicFields({
   onRegenerate,
   regeneratingKey,
   showEmptyMessage = false,
+  fieldKeyPrefix,
 }: DynamicFieldsProps) {
   return (
     <View>
@@ -120,7 +122,7 @@ export function DynamicFields({
               )}
 
               {onRegenerate && (
-                regeneratingKey === field.key ? (
+                regeneratingKey === (fieldKeyPrefix ? `${fieldKeyPrefix}:${field.key}` : field.key) ? (
                   <ActivityIndicator size="small" color={colors.primary} />
                 ) : (
                   <TouchableOpacity
@@ -144,8 +146,17 @@ export function DynamicFields({
                     onRemove(field.key)
                   }
                   hitSlop={8}
-                  disabled={!!regeneratingKey}
-                  style={{ opacity: regeneratingKey ? 0.4 : 1 }}
+                  disabled={
+                    !!regeneratingKey &&
+                    regeneratingKey === (fieldKeyPrefix ? `${fieldKeyPrefix}:${field.key}` : field.key)
+                  }
+                  style={{
+                    opacity:
+                      !!regeneratingKey &&
+                      regeneratingKey === (fieldKeyPrefix ? `${fieldKeyPrefix}:${field.key}` : field.key)
+                        ? 0.4
+                        : 1,
+                  }}
                 >
                   <Ionicons
                     name="trash-outline"

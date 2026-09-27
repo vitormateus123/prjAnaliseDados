@@ -27,6 +27,7 @@ REGRAS:
 - Retorne APENAS o JSON pedido, sem texto adicional.
 - Para campos de data, use o formato YYYY-MM-DD.
 - Para campos de seleção, retorne exatamente uma das opções fornecidas.
+- Para campos de texto, sempre inicie o valor com letra maiúscula.
 
 Retorne um JSON com esta estrutura exata:
 {{"fields": [{{"key": "chave_do_campo", "value": "valor_extraído", "confidence": 0.95}}]}}
@@ -180,6 +181,7 @@ REGRAS:
 - Escolha chaves (key) em snake_case, descritivas e sem espaços.
 - Escolha rótulos (label) em português, claros para um usuário leigo.
 - A confiança (confidence) deve refletir sua certeza: 1.0 = certeza absoluta, 0.5 = incerto.
+- Para campos de texto, sempre inicie o valor com letra maiúscula.
 - Retorne APENAS o JSON pedido, sem texto adicional.
 
 JSON esperado:
@@ -481,6 +483,7 @@ REGRAS:
 - "source" de cada campo extraído indica de onde veio o valor predominantemente: "image", "audio", "text", ou "" se não fizer sentido diferenciar.
 - Tipos válidos para campos: text, long_text, number, decimal, date, boolean, select.
 - Chaves (key) em snake_case, sem espaços. Rótulos (label) em português, claros para um usuário leigo.
+- Para campos de texto, sempre inicie o valor com letra maiúscula.
 - Retorne APENAS o JSON pedido, sem texto adicional.
 """
 
