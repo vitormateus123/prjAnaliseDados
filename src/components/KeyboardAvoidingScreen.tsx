@@ -15,13 +15,23 @@ import { KeyboardAvoidingView, Platform, StyleProp, ViewStyle } from 'react-nati
 interface Props {
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
+  /** Comportamento no Android: 'height' (padrão) ou 'padding' */
+  androidBehavior?: 'height' | 'padding';
+  /** Offset extra do topo (ex: altura de header customizado) */
+  keyboardVerticalOffset?: number;
 }
 
-export function KeyboardAvoidingScreen({ children, style }: Props) {
+export function KeyboardAvoidingScreen({
+  children,
+  style,
+  androidBehavior = 'height',
+  keyboardVerticalOffset = 0,
+}: Props) {
   return (
     <KeyboardAvoidingView
       style={[{ flex: 1 }, style]}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      behavior={Platform.OS === 'ios' ? 'padding' : androidBehavior}
+      keyboardVerticalOffset={keyboardVerticalOffset}
     >
       {children}
     </KeyboardAvoidingView>

@@ -557,11 +557,6 @@ export default function CapturaScreen() {
         return;
       }
 
-      Alert.alert(
-        'Informação organizada',
-        'Organizamos esta informação sem um formulário fixo. Confira os dados antes de salvar.',
-      );
-
       await persistDynamicReport(
         captures,
         auto,
