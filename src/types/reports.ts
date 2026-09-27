@@ -6,6 +6,9 @@ export type ReportStatus = 'draft' | 'pending_sync' | 'synced' | 'error';
 export type CaptureType = 'voice' | 'photo' | 'text' | 'manual';
 export type FieldSource = 'ai' | 'manual' | 'ai_edited';
 
+// Status de extração da IA — independente do status de sincronização
+export type ExtractionStatus = 'not_applicable' | 'pending' | 'processing' | 'done' | 'failed';
+
 // Finalidade que o usuário escolhe antes de capturar, na captura automática
 // — só orienta a IA (ver _AUTO_PROMPT no backend), não define campos nem
 // funciona como template. 'OTHER' vem sempre acompanhado de customInstruction.
@@ -169,6 +172,10 @@ export interface Report {
   extraction_purpose?: ExtractionPurpose | null;
   extraction_custom_instruction?: string | null;
   status: ReportStatus;
+  // Status da extração da IA — independente do sync
+  extraction_status: ExtractionStatus;
+  extraction_attempts?: number;
+  extraction_last_error?: string | null;
   fields: ReportField[];
   items: ReportItem[];         // só preenchido quando o template tem has_items=true
   captures: Capture[];

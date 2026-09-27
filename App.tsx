@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { SafeAreaView, Text, StyleSheet } from 'react-native';
+import { useEffect, useState, useRef } from 'react';
+import { SafeAreaView, Text, StyleSheet, Linking } from 'react-native';
 import {
   NavigationContainer,
   DefaultTheme,
@@ -12,6 +12,7 @@ import {
 } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { Session } from '@supabase/supabase-js';
+import * as Notifications from 'expo-notifications';
 
 import LoginScreen from './src/screens/Login';
 import CapturaScreen from './src/screens/Captura';
@@ -21,9 +22,20 @@ import AjustesScreen from './src/screens/Ajustes';
 import { TemplatesRevisaoScreen } from './src/screens/TemplatesRevisao';
 import { GerenciarFormulariosScreen } from './src/screens/GerenciarFormularios';
 import { startAutoSync } from './src/services/sync/SyncService';
+import { startAutoExtractQueue } from './src/services/extraction/AutoExtractQueueService';
 import { supabase, supabaseConfigError } from './src/services/auth/supabaseClient';
 import { warmUpBackend, apiConfigError } from './src/services/api/apiClient';
 import { colors } from './src/theme';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
 
 function ConfigErrorScreen({ message }: { message: string }) {
   return (
@@ -139,11 +151,28 @@ function MainTabs() {
   );
 }
 
-function AuthenticatedNavigator() {
+function AuthenticatedNavigator({ navigationContainerRef }: { navigationContainerRef: any }) {
   useEffect(() => {
     const stopAutoSync = startAutoSync();
-    return stopAutoSync;
-  }, []);
+    const stopAutoExtract = startAutoExtractQueue();
+
+    // Listener para toque na notificação (app aberto ou em background)
+    const responseListener = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data;
+      if (data?.type === 'extraction_complete' && data?.reportId) {
+        navigationContainerRef.current?.navigate('Revisao', {
+          reportId: data.reportId,
+          extractionFailed: false,
+        });
+      }
+    });
+
+    return () => {
+      stopAutoSync();
+      stopAutoExtract();
+      responseListener.remove();
+    };
+  }, [navigationContainerRef]);
 
   return (
     <Stack.Navigator
@@ -181,6 +210,7 @@ function AuthenticatedNavigator() {
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const navigationContainerRef = useRef<any>(null);
 
   const configError = supabaseConfigError || apiConfigError;
 
@@ -229,8 +259,8 @@ export default function App() {
   }
 
   return (
-    <NavigationContainer theme={navTheme}>
-      {session ? <AuthenticatedNavigator /> : (
+    <NavigationContainer theme={navTheme} ref={navigationContainerRef}>
+      {session ? <AuthenticatedNavigator navigationContainerRef={navigationContainerRef} /> : (
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           <Stack.Screen name="Login" component={LoginScreen} />
         </Stack.Navigator>

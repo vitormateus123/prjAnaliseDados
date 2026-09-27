@@ -14,6 +14,7 @@ import {
   ScrollView,
   Image,
   Modal,
+  Platform,
 } from 'react-native';
 import { useNavigation, useRoute, NavigationProp, RouteProp } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
@@ -33,7 +34,7 @@ import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
 import { fetchFormTemplateById } from '../services/api/forms/TemplatesService';
 import { FormTemplate } from '../types/forms';
-import { AutoExtractionResult, Capture, ExtractionPurpose, Report, ReportField, ReportItem } from '../types/reports';
+import { AutoExtractionResult, Capture, ExtractionPurpose, ExtractionStatus, Report, ReportField, ReportItem } from '../types/reports';
 import {
   buildDynamicReportFields,
   buildDynamicReportItems,
@@ -148,35 +149,6 @@ export default function CapturaScreen() {
     setCustomInstruction('');
   }
 
-  async function persistUnstructuredReport(captures: Capture[]) {
-    const now = new Date().toISOString();
-
-    const report: Report = {
-      id: Crypto.randomUUID(),
-      context_label: 'Informação recebida',
-      extraction_purpose: purpose,
-      extraction_custom_instruction:
-        purpose === 'OTHER'
-          ? customInstruction.trim() || null
-          : null,
-      status: 'draft',
-      fields: [],
-      items: [],
-      captures,
-      created_at: now,
-      updated_at: now,
-    };
-
-    await StorageService.upsertReport(report);
-
-    clearStaged();
-
-    navigation.navigate('Revisao', {
-      reportId: report.id,
-      extractionFailed: true,
-    });
-  }
-
   // Relatório sem template (structure_mode='dynamic') — a IA já devolveu os
   // campos/itens prontos, só falta montar o Report e mandar pra Revisão.
   async function persistDynamicReport(
@@ -198,6 +170,9 @@ export default function CapturaScreen() {
           ? customInstruction.trim() || null
           : null,
       status: 'draft',
+      extraction_status: 'done',
+      extraction_attempts: 0,
+      extraction_last_error: null,
       fields: flatFields,
       items,
       captures,
@@ -304,6 +279,9 @@ export default function CapturaScreen() {
           : null,
 
       status: 'draft',
+      extraction_status: extractionFailed ? 'failed' : 'done',
+      extraction_attempts: extractionFailed ? 1 : 0,
+      extraction_last_error: extractionFailed ? 'Falha na extração inicial' : null,
       fields: flatFields,
       items,
       captures,
@@ -321,6 +299,73 @@ export default function CapturaScreen() {
       reportId: report.id,
       extractionFailed,
     });
+  }
+
+  // Salva relatório com extraction_status: 'pending' para extração assíncrona posterior.
+  // Mostra Alert com opções "Preencher agora" (vai pra Revisão) / "Deixar para depois" (volta pro Histórico).
+  async function persistPendingExtraction(
+    captures: Capture[],
+    options: {
+      formTemplateId?: string | null;
+      formTemplateName?: string | null;
+      contextLabel?: string;
+      contextType?: string | null;
+      extractionPurpose?: ExtractionPurpose | null;
+      extractionCustomInstruction?: string | null;
+    } = {},
+  ) {
+    const now = new Date().toISOString();
+
+    const report: Report = {
+      id: Crypto.randomUUID(),
+      form_template_id: options.formTemplateId ?? null,
+      form_template_name: options.formTemplateName ?? null,
+      context_label: options.contextLabel ?? null,
+      context_type: options.contextType ?? null,
+      extraction_purpose: options.extractionPurpose ?? null,
+      extraction_custom_instruction: options.extractionCustomInstruction ?? null,
+      status: 'draft',
+      extraction_status: 'pending',
+      extraction_attempts: 0,
+      extraction_last_error: null,
+      fields: [],
+      items: [],
+      captures,
+      created_at: now,
+      updated_at: now,
+    };
+
+    await StorageService.upsertReport(report);
+    clearStaged();
+
+    // Oferece escolha ao usuário
+    const choice = await new Promise<'fill' | 'later'>((resolve) => {
+      Alert.alert(
+        'Sem conexão',
+        'A extração por IA precisa de internet. Sua captura foi salva no aparelho e será processada automaticamente assim que a conexão voltar; você recebe um aviso quando terminar. Se preferir, pode preencher os campos manualmente agora.',
+        [
+          {
+            text: 'Deixar para depois',
+            onPress: () => resolve('later'),
+          },
+          {
+            text: 'Preencher agora',
+            onPress: () => resolve('fill'),
+          },
+        ],
+        { cancelable: false },
+      );
+    });
+
+    if (choice === 'fill') {
+      navigation.navigate('Revisao', {
+        reportId: report.id,
+        extractionFailed: true,
+      });
+    } else {
+      // Volta para o Histórico (a navegação já está no stack, só fechar Captura)
+      navigation.goBack();
+    }
   }
 
   // ─── modo manual: template já escolhido em FormSelectScreen ────────────
@@ -342,23 +387,18 @@ export default function CapturaScreen() {
     const netState = await NetInfo.fetch();
 
     if (!netState.isConnected) {
-      Alert.alert(
-        'Sem conexão',
-        'Você está offline — a extração por IA não está disponível. Preencha manualmente.',
-      );
-
-      const items = activeTemplate.has_items
-        ? [emptyReportItem(itemTemplateFields)]
-        : [];
-
-      await persistReport(
-        activeTemplate,
+      await persistPendingExtraction(
         [capture],
-        buildReportFields(flatTemplateFields, null),
-        items,
-        true,
+        {
+          formTemplateId: activeTemplate.id,
+          formTemplateName: activeTemplate.name,
+          extractionPurpose: isAutoMode ? purpose : null,
+          extractionCustomInstruction:
+            isAutoMode && purpose === 'OTHER'
+              ? customInstruction.trim() || null
+              : null,
+        },
       );
-
       return;
     }
 
@@ -492,9 +532,7 @@ export default function CapturaScreen() {
         {
           text: 'Revisar manualmente',
           onPress: () => {
-            void persistUnstructuredReport(
-              captures,
-            );
+            void persistPendingExtraction(captures);
           },
         },
         {
@@ -701,21 +739,18 @@ export default function CapturaScreen() {
       await NetInfo.fetch();
 
     if (!netState.isConnected) {
-      Alert.alert(
-        'Sem conexão',
-        'Sua informação será salva no dispositivo. Você poderá preenchê-la agora e ela será sincronizada quando houver conexão.',
-        [
-          {
-            text: 'Continuar',
-            onPress: () => {
-              void persistUnstructuredReport(
-                captures,
-              );
-            },
-          },
-        ],
+      await persistPendingExtraction(
+        captures,
+        {
+          contextLabel: 'Informação recebida',
+          contextType: null,
+          extractionPurpose: purpose,
+          extractionCustomInstruction:
+            purpose === 'OTHER'
+              ? customInstruction.trim() || null
+              : null,
+        },
       );
-
       return;
     }
 
