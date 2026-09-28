@@ -25,6 +25,7 @@ import { startAutoSync } from './src/services/sync/SyncService';
 import { startAutoExtractQueue } from './src/services/extraction/AutoExtractQueueService';
 import { supabase, supabaseConfigError } from './src/services/auth/supabaseClient';
 import { warmUpBackend, apiConfigError } from './src/services/api/apiClient';
+import { registerPushToken } from './src/services/api/devices/PushTokenService';
 import { colors } from './src/theme';
 
 Notifications.setNotificationHandler({
@@ -234,6 +235,11 @@ export default function App() {
       if (mounted) {
         setSession(data.session);
         setAuthLoading(false);
+        // Sessão já salva ao abrir o app: o worker de extração offline precisa
+        // do token para avisar quando terminar com o app fechado.
+        if (data.session) {
+          registerPushToken();
+        }
       }
     }).catch(() => {
       if (mounted) {
@@ -246,6 +252,9 @@ export default function App() {
       (_event, nextSession) => {
         setSession(nextSession);
         setAuthLoading(false);
+        if (nextSession) {
+          registerPushToken();
+        }
       },
     );
 

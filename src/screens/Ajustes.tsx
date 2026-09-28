@@ -7,6 +7,7 @@ import { StorageService } from '../storage/StorageService';
 import { syncPendingReports } from '../services/sync/SyncService';
 import { processAllPendingExtractions } from '../services/extraction/AutoExtractQueueService';
 import { supabase } from '../services/auth/supabaseClient';
+import { unregisterPushToken } from '../services/api/devices/PushTokenService';
 import { RootStackParamList } from '../../App';
 import { colors, radius, shadows, spacing } from '../theme';
 import { ExtractionStatus } from '../types/reports';
@@ -84,6 +85,11 @@ export default function AjustesScreen() {
   }
 
   async function handleLogout() {
+    // Desativa o token deste aparelho ANTES de derrubar a sessão: o DELETE
+    // /devices/push-token precisa do JWT. Sem isso, o aparelho continuaria
+    // recebendo notificações caso outro usuário entre depois nesta conta.
+    await unregisterPushToken();
+
     const { error } = await supabase.auth.signOut({ scope: 'local' });
     if (error) {
       Alert.alert('Não foi possível sair', 'Tente novamente.');

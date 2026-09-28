@@ -5,7 +5,7 @@ from app.schemas.extraction import PushTokenRequest, PushTokenResponse
 from app.services.supabase_service import get_client
 from app.security.auth import get_current_user
 
-router = APIRouter(prefix="/devices", tags=["devices"])
+router = APIRouter()
 
 
 @router.post("/push-token", response_model=PushTokenResponse)
