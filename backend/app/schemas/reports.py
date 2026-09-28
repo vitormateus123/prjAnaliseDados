@@ -99,6 +99,10 @@ class ReportOut(BaseModel):
     extraction_purpose: Optional[str] = None
     extraction_custom_instruction: Optional[str] = None
     status: str
+    # Status de extração da IA (independente do sync)
+    extraction_status: Optional[str] = 'not_applicable'
+    extraction_attempts: Optional[int] = 0
+    extraction_last_error: Optional[str] = None
     fields: list[ReportFieldOut] = []
     items: list[ReportItemOut] = []
     captures: list[CaptureOut] = []

@@ -522,3 +522,28 @@ async def summarize_report(payload: SummarizeRequest):
     except Exception as e:
         logger.exception("Falha ao gerar resumo do relatório")
         return SummarizeResponse(success=False, error=str(e))
+
+
+# ─── ENDPOINT INTERNO PARA WORKER DE EXTRAÇÃO (APScheduler / Render Cron) ────
+# Protegido por header secreto — configure EXTRACTION_WORKER_SECRET no .env
+# e configure o Render Cron Job para bater aqui a cada 5 min.
+from app.services.extraction_worker import process_pending_extractions
+from app.core.config import settings
+
+@router.post("/worker/process-pending", tags=["worker"])
+async def extraction_worker_endpoint(x_worker_secret: str | None = None):
+    """
+    Endpoint para job periódico (Render Cron Job) processar extrações pendentes.
+    Protegido por header `X-Worker-Secret` igual a `EXTRACTION_WORKER_SECRET`.
+    """
+    if x_worker_secret != settings.extraction_worker_secret:
+        logger.warning("Worker endpoint: secret inválido")
+        raise HTTPException(status_code=403, detail="Acesso não autorizado")
+
+    try:
+        results = await process_pending_extractions()
+        logger.info("Worker processamento: %s", results)
+        return {"success": True, **results}
+    except Exception as e:
+        logger.exception("Falha no worker endpoint")
+        raise HTTPException(status_code=500, detail=str(e))

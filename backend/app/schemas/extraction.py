@@ -240,3 +240,15 @@ class SummarizeResponse(BaseModel):
     success: bool
     summary: str | None = None
     error: str | None = None
+
+
+# ─── push tokens (para notificações Expo Push) ──────────────────────────────
+class PushTokenRequest(BaseModel):
+    expo_push_token: str
+    device_id: str | None = None
+    platform: str | None = None  # 'android' | 'ios' | 'web'
+
+
+class PushTokenResponse(BaseModel):
+    success: bool
+    error: str | None = None

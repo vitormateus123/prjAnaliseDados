@@ -28,6 +28,11 @@ Notifications.setNotificationHandler({
   }),
 });
 
+const DEBUG = true;
+function log(...args: any[]) {
+  if (DEBUG) console.log('[AutoExtractQueue]', ...args);
+}
+
 const UPLOADABLE_TYPES = new Set<Capture['type']>(['photo', 'voice']);
 
 async function attachCaptureData(captures: Capture[]): Promise<Capture[]> {
@@ -69,15 +74,21 @@ function findTextCapture(captures: Capture[]): string | null {
 
 // Envia notificação local de extração concluída
 async function sendExtractionCompleteNotification(reportId: string, label: string): Promise<void> {
+  log('sendExtractionCompleteNotification - INICIADO', reportId, label);
   try {
     // Pede permissão se ainda não tiver
     const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    log('sendExtractionCompleteNotification - permissão atual:', existingStatus);
     let finalStatus = existingStatus;
     if (existingStatus !== 'granted') {
       const { status } = await Notifications.requestPermissionsAsync();
       finalStatus = status;
+      log('sendExtractionCompleteNotification - permissão solicitada:', finalStatus);
     }
-    if (finalStatus !== 'granted') return;
+    if (finalStatus !== 'granted') {
+      log('sendExtractionCompleteNotification - permissão NEGADA');
+      return;
+    }
 
     await Notifications.scheduleNotificationAsync({
       content: {
@@ -87,12 +98,14 @@ async function sendExtractionCompleteNotification(reportId: string, label: strin
       },
       trigger: null, // Imediato
     });
+    log('sendExtractionCompleteNotification - notificação agendada');
   } catch (err) {
-    if (__DEV__) console.warn('[AutoExtractQueue] falha ao enviar notificação', err);
+    log('sendExtractionCompleteNotification - ERRO:', err);
   }
 }
 
 async function processPendingReport(report: Report): Promise<{ success: boolean; error?: string }> {
+  log('processPendingReport INICIADO', report.id, 'form_template_id:', report.form_template_id);
   try {
     // Marca como processing
     await StorageService.upsertReport({
@@ -100,8 +113,10 @@ async function processPendingReport(report: Report): Promise<{ success: boolean;
       extraction_status: 'processing',
       updated_at: new Date().toISOString(),
     });
+    log('processPendingReport - marcado como processing');
 
     const capturesWithData = await attachCaptureData(report.captures);
+    log('processPendingReport - captures anexadas', capturesWithData.length);
     const photos = capturesToStagedPhotos(capturesWithData);
     const audioCapture = findAudioCapture(capturesWithData);
     const textContent = findTextCapture(capturesWithData);
@@ -219,6 +234,7 @@ async function processPendingReport(report: Report): Promise<{ success: boolean;
       ai_summary,
       updated_at: new Date().toISOString(),
     });
+    log('processPendingReport - SUCESSO, status=done');
 
     // Notificação local
     const label = report.context_label ?? report.form_template_name ?? 'Relatório';
@@ -227,7 +243,7 @@ async function processPendingReport(report: Report): Promise<{ success: boolean;
     return { success: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Erro desconhecido na extração';
-    if (__DEV__) console.error('[AutoExtractQueue] falha ao processar', report.id, error);
+    log('processPendingReport - ERRO:', message);
 
     await StorageService.upsertReport({
       ...report,
@@ -243,9 +259,11 @@ async function processPendingReport(report: Report): Promise<{ success: boolean;
 
 async function processPendingExtractions(): Promise<{ processed: number; succeeded: number; failed: number }> {
   const allReports = await StorageService.getAllReports();
+  log('processPendingExtractions - total reports:', allReports.length);
   const pending = allReports.filter(
     (r) => r.extraction_status === 'pending' || r.extraction_status === 'processing',
   );
+  log('processPendingExtractions - pending/processing:', pending.length, pending.map(p => p.id));
 
   let processed = 0;
   let succeeded = 0;
@@ -258,6 +276,7 @@ async function processPendingExtractions(): Promise<{ processed: number; succeed
     else failed++;
   }
 
+  log('processPendingExtractions - fim:', { processed, succeeded, failed });
   return { processed, succeeded, failed };
 }
 
@@ -269,18 +288,24 @@ let isExtracting = false;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 
 async function attemptAutoExtract(): Promise<void> {
-  if (isExtracting) return;
+  if (isExtracting) {
+    log('attemptAutoExtract - já está extraindo, pulando');
+    return;
+  }
+  log('attemptAutoExtract - INICIANDO');
   isExtracting = true;
   try {
     await processPendingExtractions();
   } catch (err) {
-    if (__DEV__) console.error('[AutoExtractQueue] auto-extract falhou', err);
+    log('attemptAutoExtract - ERRO:', err);
   } finally {
     isExtracting = false;
+    log('attemptAutoExtract - FIM');
   }
 }
 
 function scheduleAutoExtract(): void {
+  log('scheduleAutoExtract - agendado');
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(attemptAutoExtract, DEBOUNCE_MS);
 }
@@ -300,21 +325,26 @@ function scheduleAutoExtract(): void {
  * componente raiz normalmente não desmonta).
  */
 export function startAutoExtractQueue(): () => void {
-  const netUnsubscribe = NetInfo.addEventListener(() => {
+  log('startAutoExtractQueue - INICIANDO listeners');
+  const netUnsubscribe = NetInfo.addEventListener((state) => {
+    log('NetInfo event:', state.isConnected ? 'online' : 'offline', state.type);
     scheduleAutoExtract();
   });
 
   const appStateSubscription = AppState.addEventListener('change', (state: AppStateStatus) => {
+    log('AppState change:', state);
     if (state === 'active') scheduleAutoExtract();
   });
 
   const interval = setInterval(attemptAutoExtract, AUTO_EXTRACT_INTERVAL_MS);
+  log('startAutoExtractQueue - intervalo configurado:', AUTO_EXTRACT_INTERVAL_MS, 'ms');
 
   // Tenta uma vez já na inicialização — cobre o caso de relatórios
   // pendentes de uma sessão anterior que ficaram sem extração.
   scheduleAutoExtract();
 
   return () => {
+    log('startAutoExtractQueue - CLEANUP');
     netUnsubscribe();
     appStateSubscription.remove();
     clearInterval(interval);

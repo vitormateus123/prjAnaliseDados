@@ -153,8 +153,13 @@ function MainTabs() {
 
 function AuthenticatedNavigator({ navigationContainerRef }: { navigationContainerRef: any }) {
   useEffect(() => {
+    console.log('[App] Iniciando AutoSync...');
     const stopAutoSync = startAutoSync();
+    console.log('[App] AutoSync iniciado');
+
+    console.log('[App] Iniciando AutoExtractQueue...');
     const stopAutoExtract = startAutoExtractQueue();
+    console.log('[App] AutoExtractQueue iniciado');
 
     // Listener para toque na notificação (app aberto ou em background)
     const responseListener = Notifications.addNotificationResponseReceivedListener((response) => {

@@ -13,6 +13,10 @@ class Settings(BaseSettings):
 
     gemini_model: str = "gemini-3.5-flash-lite"
 
+    # Segredo para o endpoint de worker de extração (APScheduler / Render Cron Job)
+    # Gere um valor aleatório forte: openssl rand -hex 32
+    extraction_worker_secret: str = "changeme-in-production"
+
     # Produção deve declarar uma lista explícita. O wildcard só é permitido
     # fora de produção para facilitar o desenvolvimento local.
     allowed_origins: str = "http://localhost:8081,http://localhost:19006"
