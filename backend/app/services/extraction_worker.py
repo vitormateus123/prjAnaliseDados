@@ -16,7 +16,7 @@ from uuid import UUID
 
 from app.services.gemini_service import classify_and_extract, refine_fields
 from app.services.groq_service import transcribe_audio
-from app.services.supabase_service import get_client
+from app.services.supabase_service import get_admin_client as get_client
 from app.core.config import settings
 
 logger = logging.getLogger("extraction_worker")
