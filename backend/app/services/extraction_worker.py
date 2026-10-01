@@ -1,480 +1,522 @@
 # backend/app/services/extraction_worker.py
-# Worker de extração automática — chamado pelo job periódico (APScheduler)
-# e pelo endpoint /devices/push-token (para processar relatórios do usuário
-# logo após ele conceder permissão de notificação).
-#
-# Reaproveita a lógica existente de /extract/auto (gemini_service.classify_and_extract)
-# e /extract/refine (gemini_service.refine_fields), adaptando para rodar
-# no backend com dados já persistidos no banco.
+"""Worker de extração offline — roda SÓ no servidor.
 
-import base64
-import httpx
+Fluxo: o usuário captura sem internet → o app guarda a captura e, quando a
+conexão volta (mesmo com o app fechado, via tarefa em segundo plano), envia o
+relatório com extraction_status='pending' (POST /reports/). Este worker
+(GitHub Actions / Fly Machine / APScheduler, ver worker_runner.py e main.py)
+pega os relatórios 'pending', extrai com a IA, grava os campos e avisa o
+usuário por push (Expo). O app busca o resultado depois (GET /reports/).
+
+Garantias:
+  - claim atômico: pending → processing é um UPDATE condicional, então dois
+    workers (ou duas execuções) nunca extraem o mesmo relatório;
+  - 'processing' travado (worker morto) volta para 'pending' após
+    STALE_PROCESSING; cada claim conta uma tentativa (MAX_ATTEMPTS);
+  - só lê mídia do Storage em caminhos que pertencem ao próprio relatório
+    (safe_capture_path) e confere o tipo real pelos magic bytes.
+"""
+import asyncio
 import logging
-from datetime import datetime, timedelta
-from typing import Optional
-from uuid import UUID
+import uuid
+from datetime import datetime, timedelta, timezone
 
-from app.services.gemini_service import classify_and_extract, refine_fields
-from app.services.groq_service import transcribe_audio
-from app.services.supabase_service import get_admin_client as get_client
+import httpx
+
+from app.api.routes.reports import _CAPTURES_BUCKET, _field_value_to_columns
+from app.api.routes.templates import FIELD_TYPES
 from app.core.config import settings
+from app.core.errors import public_ai_error
+from app.core.media import MediaError, safe_capture_path, validate_media_bytes
+from app.schemas.extraction import EXTRACTION_PURPOSES, FieldHint
+from app.services import gemini_service
+from app.services.groq_service import transcribe_audio
+from app.services.supabase_service import get_admin_client
+from app.services.template_catalog import fetch_template_catalog
 
 logger = logging.getLogger("extraction_worker")
 
-_MAX_REFINE_FILE_SIZE = 10 * 1024 * 1024  # 10 MB
-_EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
-
-# Estados válidos de extração (espelha migration 0014)
+# Estados de extração (espelha migration 0014)
 EXTRACTION_PENDING = "pending"
 EXTRACTION_PROCESSING = "processing"
 EXTRACTION_DONE = "done"
 EXTRACTION_FAILED = "failed"
 
+MAX_ATTEMPTS = 3
+STALE_PROCESSING = timedelta(minutes=10)  # worker que morreu no meio da extração
+AI_TIMEOUT_SECONDS = 120
+_EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send"
+_VALID_INPUT_SOURCES = {"image", "audio", "text"}
 
-async def _download_capture(capture: dict) -> tuple[bytes, str] | None:
-    """Baixa arquivo de capture do Storage via signed URL ou file_url direto."""
-    file_url = capture.get("file_url")
-    if not file_url:
+
+class ExtractionSuperseded(Exception):
+    """O relatório mudou de estado durante a extração (ex.: o usuário preencheu
+    manualmente e o app mandou extraction_status='not_applicable'). O resultado
+    da IA é descartado — nunca sobrescreve o que a pessoa digitou."""
+
+
+# ─── valores ───────────────────────────────────────────────────────────────
+
+def _parse_value(field_type: str, raw: str) -> dict:
+    """Texto devolvido pela IA → FieldValue tipado (espelha parseFieldValue em
+    src/utils/fieldValue.ts)."""
+    text = (raw or "").strip()
+    if field_type in ("number", "decimal"):
+        try:
+            normalized = text.replace(",", ".")
+            value = None if not text else (
+                int(float(normalized)) if field_type == "number" else float(normalized)
+            )
+        except ValueError:
+            value = None
+        return {"type": field_type, "value": value}
+    if field_type == "boolean":
+        lowered = text.lower()
+        value = (
+            True if lowered in ("sim", "true", "verdadeiro", "1")
+            else False if lowered in ("não", "nao", "false", "falso", "0")
+            else None
+        )
+        return {"type": "boolean", "value": value}
+    if field_type == "date":
+        return {"type": "date", "value": text or None}
+    if field_type == "select":
+        return {"type": "select", "value": text or None}
+    if field_type == "multiselect":
+        return {"type": "multiselect", "value": [v.strip() for v in text.split(",") if v.strip()]}
+    return {"type": field_type, "value": raw}
+
+
+def _field_row(
+    owner: dict,
+    *,
+    key: str,
+    label: str,
+    field_type: str,
+    raw_value: str | None,
+    confidence: float | None,
+    source: str | None,
+    form_field_id: str | None,
+) -> dict | None:
+    """Linha de report_fields/report_item_fields, ou None quando a IA não achou
+    valor (campos vazios não são gravados — mesmo critério do app)."""
+    if not (raw_value or "").strip():
         return None
+    field_type = field_type if field_type in FIELD_TYPES else "text"
+    columns = _field_value_to_columns(_parse_value(field_type, raw_value))
+    if all(v in (None, []) for v in columns.values()):
+        return None  # ex.: número que não deu para interpretar
 
-    try:
-        # Se é URL http(s) completa, usa direto; senão é caminho do Storage
-        if file_url.startswith("http"):
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(file_url)
-            if resp.status_code != 200:
-                logger.warning("Falha ao baixar capture %s: %d", capture.get("id"), resp.status_code)
-                return None
-            data = resp.content
-        else:
-            # Caminho do Storage: gera signed URL e baixa
-            from app.api.routes.reports import _CAPTURES_BUCKET
-            from app.services.supabase_service import get_client
-            supabase = get_client()
-            result = supabase.storage.from_(_CAPTURES_BUCKET).create_signed_url(file_url, 3600)
-            signed_url = result.get("signedURL") or result.get("signedUrl")
-            if not signed_url:
-                logger.warning("Falha ao gerar signed URL para %s", file_url)
-                return None
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                resp = await client.get(signed_url)
-            if resp.status_code != 200:
-                logger.warning("Falha ao baixar capture assinada %s: %d", file_url, resp.status_code)
-                return None
-            data = resp.content
+    row = {
+        **owner,
+        "form_field_id": form_field_id,
+        "confidence": None if confidence is None else max(0.0, min(1.0, float(confidence))),
+        "source": "ai",
+        "input_source": source if source in _VALID_INPUT_SOURCES else None,
+        "was_edited": False,
+        **columns,
+    }
+    if form_field_id is None:
+        row.update({"dynamic_key": key, "dynamic_label": label, "dynamic_type": field_type})
+    return row
 
-        if len(data) > _MAX_REFINE_FILE_SIZE:
-            logger.warning("Capture %s maior que 10MB, ignorando", capture.get("id"))
-            return None
 
-        return data, capture.get("mime_type", "application/octet-stream")
-    except Exception as e:
-        logger.exception("Erro ao baixar capture %s: %s", capture.get("id"), e)
+# ─── acesso ao banco (síncrono; chamado via asyncio.to_thread) ────────────
+
+def _release_stale_processing(db) -> None:
+    cutoff = (datetime.now(timezone.utc) - STALE_PROCESSING).isoformat()
+    db.table("reports").update({"extraction_status": EXTRACTION_PENDING}).eq(
+        "extraction_status", EXTRACTION_PROCESSING
+    ).lte("updated_at", cutoff).execute()
+
+
+def _list_pending(db, limit: int) -> list[dict]:
+    return (
+        db.table("reports")
+        .select("id,extraction_attempts")
+        .eq("extraction_status", EXTRACTION_PENDING)
+        .order("updated_at")
+        .limit(limit)
+        .execute()
+        .data
+    ) or []
+
+
+def _claim(db, report_id: str, attempts: int) -> bool:
+    """pending → processing, atômico. A condição em extraction_attempts impede
+    que duas execuções peguem o mesmo relatório ao mesmo tempo."""
+    resp = (
+        db.table("reports")
+        .update({"extraction_status": EXTRACTION_PROCESSING, "extraction_attempts": attempts + 1})
+        .eq("id", report_id)
+        .eq("extraction_status", EXTRACTION_PENDING)
+        .eq("extraction_attempts", attempts)
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def _mark_exhausted(db, report_id: str) -> bool:
+    resp = (
+        db.table("reports")
+        .update({
+            "extraction_status": EXTRACTION_FAILED,
+            "extraction_last_error": "A extração falhou várias vezes. Preencha manualmente.",
+        })
+        .eq("id", report_id)
+        .eq("extraction_status", EXTRACTION_PENDING)
+        .execute()
+    )
+    return bool(resp.data)
+
+
+def _finish_failure(db, report_id: str, message: str, final: bool) -> None:
+    db.table("reports").update({
+        "extraction_status": EXTRACTION_FAILED if final else EXTRACTION_PENDING,
+        "extraction_last_error": message,
+    }).eq("id", report_id).eq("extraction_status", EXTRACTION_PROCESSING).execute()
+
+
+def _load_report(db, report_id: str) -> dict | None:
+    rows = db.table("reports").select("*, captures(*)").eq("id", report_id).execute().data
+    return rows[0] if rows else None
+
+
+def _load_template(db, template_id: str) -> tuple[dict, list[dict]] | None:
+    """(template, campos) de um formulário ATIVO, ou None."""
+    templates = (
+        db.table("form_templates").select("id,name,has_items")
+        .eq("id", template_id).eq("active", True).execute().data
+    )
+    if not templates:
         return None
+    fields = (
+        db.table("form_fields").select("*")
+        .eq("form_template_id", template_id).order("position").execute().data
+    ) or []
+    return templates[0], fields
 
 
-async def _resolve_media_for_report(report: dict) -> tuple[list[tuple[bytes, str]], Optional[str]]:
-    """Prepara fotos e áudio/texto para extração a partir das captures do relatório."""
-    photos_bytes: list[tuple[bytes, str]] = []
-    text_content: Optional[str] = None
+def _download(db, path: str) -> bytes:
+    return db.storage.from_(_CAPTURES_BUCKET).download(path)
+
+
+def _save_transcript(db, capture_id: str, transcript: str) -> None:
+    """A transcrição vive em captures.text_content da captura de voz (é de lá
+    que o app a exibe e que o PDF a lê). Gravar já aqui também evita pagar o
+    STT de novo se a extração falhar depois e for repetida."""
+    db.table("captures").update({"text_content": transcript}).eq("id", capture_id).execute()
+
+
+# ─── mídia do relatório ────────────────────────────────────────────────────
+
+async def _resolve_media(db, report: dict) -> tuple[list[tuple[bytes, str]], str | None]:
+    """Fotos (bytes, mime real) e o texto combinado (transcrições + digitado)."""
+    photos: list[tuple[bytes, str]] = []
+    transcripts: list[str] = []
+    typed: list[str] = []
 
     for capture in report.get("captures") or []:
         ctype = capture.get("type")
+        if ctype == "text":
+            if (capture.get("text_content") or "").strip():
+                typed.append(capture["text_content"].strip())
+            continue
+        if ctype not in ("photo", "voice"):
+            continue
+
+        if ctype == "voice" and (capture.get("text_content") or "").strip():
+            transcripts.append(capture["text_content"].strip())  # já transcrita
+            continue
+
+        path = safe_capture_path(
+            capture.get("file_url"), report["id"], settings.supabase_url, _CAPTURES_BUCKET
+        )
+        if not path:
+            logger.warning("Capture %s sem arquivo válido no Storage; ignorada.", capture.get("id"))
+            continue
+
+        data = await asyncio.to_thread(_download, db, path)
         if ctype == "photo":
-            downloaded = await _download_capture(capture)
-            if downloaded:
-                photos_bytes.append(downloaded)
-        elif ctype == "voice":
-            downloaded = await _download_capture(capture)
-            if downloaded:
-                audio_bytes, audio_mime = downloaded
-                try:
-                    transcript = await transcribe_audio(audio_bytes, audio_mime)
-                    text_content = (f"{transcript}\n\n[Texto adicional]:\n{text_content}" if text_content else transcript)
-                except Exception as e:
-                    logger.exception("Falha STT no worker para capture %s: %s", capture.get("id"), e)
-        elif ctype == "text" and capture.get("text_content"):
-            text_content = (f"{capture['text_content']}\n\n[Texto adicional]:\n{text_content}" if text_content else capture["text_content"])
-
-    return photos_bytes, text_content
-
-
-async def _fetch_template_catalog() -> list[dict]:
-    """Busca catálogo de templates para classify_and_extract (mesmo código de extract.py)."""
-    supabase = get_client()
-    templates_resp = supabase.table("form_templates").select("*").eq("active", True).execute()
-    templates = templates_resp.data or []
-
-    catalog: list[dict] = []
-    for t in templates:
-        fields_resp = (
-            supabase.table("form_fields")
-            .select("*")
-            .eq("form_template_id", t["id"])
-            .order("position")
-            .execute()
-        )
-        catalog.append({
-            "id": t["id"],
-            "name": t["name"],
-            "description": t.get("description"),
-            "has_items": t.get("has_items", False),
-            "fields": [
-                {
-                    "key": f["key"],
-                    "label": f["label"],
-                    "type": f["type"],
-                    "extraction_hint": f.get("extraction_hint"),
-                    "options": f.get("options"),
-                    "is_item_field": f.get("is_item_field", False),
-                }
-                for f in (fields_resp.data or [])
-            ],
-        })
-    return catalog
-
-
-async def _build_purpose_block(purpose: str | None, custom_instruction: str | None) -> str:
-    """Reaproveita o bloco de propósito do gemini_service (copiado aqui pra evitar import circular)."""
-    from app.services.gemini_service import _PURPOSE_GUIDANCE, _build_purpose_block as gemini_build_purpose_block
-    return gemini_build_purpose_block(purpose, custom_instruction)
-
-
-async def run_auto_extraction(report_id: str) -> bool:
-    """
-    Processa um único relatório com extraction_status='pending'.
-    Retorna True se processou com sucesso (status vira 'done'), False caso contrário.
-    """
-    supabase = get_client()
-
-    # 1. Marca como processing (trava contra duplicidade)
-    try:
-        supabase.table("reports").update({
-            "extraction_status": EXTRACTION_PROCESSING,
-            "updated_at": datetime.utcnow().isoformat(),
-        }).eq("id", report_id).execute()
-    except Exception as e:
-        logger.exception("Falha ao marcar processing para %s: %s", report_id, e)
-        return False
-
-    try:
-        # 2. Busca relatório completo com captures
-        resp = supabase.table("reports").select(
-            "*, captures(*)"
-        ).eq("id", report_id).execute()
-
-        if not resp.data:
-            logger.warning("Relatório %s não encontrado", report_id)
-            return False
-
-        report = resp.data[0]
-
-        # 3. Verifica se já foi processado por outra instância (race condition)
-        if report.get("extraction_status") == EXTRACTION_DONE:
-            logger.info("Relatório %s já estava done, pulando", report_id)
-            return True
-
-        # 4. Prepara mídia e texto
-        photos_bytes, text_content = await _resolve_media_for_report(report)
-
-        if not photos_bytes and not text_content:
-            logger.warning("Relatório %s sem mídia/texto utilizável", report_id)
-            supabase.table("reports").update({
-                "extraction_status": EXTRACTION_FAILED,
-                "extraction_attempts": (report.get("extraction_attempts") or 0) + 1,
-                "extraction_last_error": "Sem mídia ou texto para extrair",
-                "updated_at": datetime.utcnow().isoformat(),
-            }).eq("id", report_id).execute()
-            return False
-
-        # 5. Chama classify_and_extract (mesmo que /extract/auto)
-        catalog = await _fetch_template_catalog()
-        purpose = report.get("extraction_purpose")
-        custom_instruction = report.get("extraction_custom_instruction")
-
-        purpose_block = await _build_purpose_block(purpose, custom_instruction)
-
-        from app.services.gemini_service import _auto_config
-        from google.genai import types
-        import json
-
-        prompt = f"""Você é um assistente que recebe uma captura de campo (foto e/ou texto — que pode ser transcrição de áudio ou digitado) e decide como estruturá-la dentro de um sistema de formulários dinâmico.
-
-FORMULÁRIOS JÁ CADASTRADOS (catálogo, em JSON):
-{json.dumps(catalog, ensure_ascii=False)}
-
-SEU TRABALHO, EM UMA ÚNICA RESPOSTA:
-1. Decida se o conteúdo se encaixa em algum formulário do catálogo acima (match="existing") ou se nenhum deles serve (match="dynamic"). Prefira reaproveitar um formulário existente sempre que o conteúdo for genuinamente do mesmo tipo, mesmo que falte algum campo — isso evita recriar a mesma estrutura a cada captura parecida. Mas NÃO force o conteúdo dentro de um formulário do catálogo só porque existe um remotamente parecido: se a finalidade informada ou o conteúdo indicam outra coisa, prefira match="dynamic".
-2. Se match="existing": preencha "template_id" com o id exato do formulário escolhido (copiado do catálogo). Se esse formulário não tiver algum campo essencial para o conteúdo (ex.: uma nota fiscal sem campo "emissor"), liste esse(s) campo(s) em "suggested_fields" no mesmo formato dos campos do catálogo — isso NÃO é motivo para trocar para match="dynamic". Deixe "dynamic_fields"=[] e "dynamic_items"=[].
-3. Se match="dynamic": estruture a informação livremente, sem se prender a nenhum formulário — decida você mesmo quais campos existem, a partir do conteúdo (e da finalidade informada, se houver). Preencha "context_label" (descrição curta e legível, ex: "Contagem de estoque — depósito A") e "context_type" (slug curto, ex: "contagem_estoque"). Coloque os campos únicos do relatório em "dynamic_fields" e, se o conteúdo tiver itens repetidos (ex: vários produtos), cada item em "dynamic_items" (cada um com seus próprios "fields"). Se não houver itens repetidos, "dynamic_items"=[]. Deixe "template_id"="" e "suggested_fields"=[].
-4. Em "fields" (modo existing), extraia os valores encontrados no conteúdo para os campos de nível de relatório (do template escolhido + suggested_fields) — apenas os que NÃO são is_item_field.
-5. Se o formulário existente tiver has_items=true, retorne também "items": uma lista onde cada item tem seus próprios "fields", contendo só os campos marcados is_item_field. Se has_items=false, retorne "items": [].
-{purpose_block}
-
-REGRAS:
-- Nunca invente informações que não estão no conteúdo.
-- Para valores não encontrados, use string vazia "".
-- confidence reflete sua certeza: 1.0 = certeza absoluta, 0.5 = incerto.
-- "source" de cada campo extraído indica de onde veio o valor predominantemente: "image", "audio", "text", ou "" se não fizer sentido diferenciar.
-- Tipos válidos para campos: text, long_text, number, decimal, date, boolean, select.
-- Chaves (key) em snake_case, sem espaços. Rótulos (label) em português, claros para um usuário leigo.
-- Retorne APENAS o JSON pedido, sem texto adicional.
-"""
-
-        contents = [prompt]
-        for media_bytes, mime_type in photos_bytes:
-            contents.append(types.Part.from_bytes(data=media_bytes, mime_type=mime_type))
-
-        from app.services.gemini_service import _client, _MODEL
-        response = await _client.aio.models.generate_content(
-            model=_MODEL,
-            contents=contents,
-            config=_auto_config(),
-        )
-        result = json.loads(response.text)
-
-        match = result.get("match")
-
-        # 6. Processa resultado e atualiza relatório
-        if match == "existing" and result.get("template_id"):
-            template_id = result["template_id"]
-
-            # Adiciona campos sugeridos se admin (opcional - manter simples por enquanto)
-            template_row_resp = (
-                supabase.table("form_templates")
-                .select("name,has_items")
-                .eq("id", template_id)
-                .execute()
-            )
-            if not template_row_resp.data:
-                raise ValueError(f"Formulário {template_id} não existe no banco.")
-
-            template_row = template_row_resp.data[0]
-            template_name = template_row["name"]
-            has_items = bool(template_row.get("has_items", False))
-
-            # Extrai campos do resultado
-            extracted_fields = result.get("fields") or []
-            extracted_items = result.get("items") or []
-
-            # Atualiza relatório com sucesso
-            update_data = {
-                "extraction_status": EXTRACTION_DONE,
-                "extraction_attempts": (report.get("extraction_attempts") or 0) + 1,
-                "extraction_last_error": None,
-                "form_template_id": template_id,
-                "form_template_name": template_name,
-                "context_label": template_name,
-                "updated_at": datetime.utcnow().isoformat(),
-            }
-            supabase.table("reports").update(update_data).eq("id", report_id).execute()
-
-            # Grava fields e items (reaproveita lógica de sync)
-            # Campos guiados
-            if extracted_fields:
-                guided_rows = []
-                for f in extracted_fields:
-                    guided_rows.append({
-                        "report_id": report_id,
-                        "form_field_id": None,  # Será preenchido ao buscar template
-                        "confidence": f.get("confidence"),
-                        "source": "ai",
-                        "was_edited": False,
-                        "dynamic_key": f.get("key"),
-                        "dynamic_label": f.get("label"),
-                        "dynamic_type": f.get("type", "text"),
-                        "value_text": f.get("value") if f.get("type") in ("text", "long_text", "select") else None,
-                        "value_number": f.get("value") if f.get("type") in ("number", "decimal") else None,
-                        "value_boolean": f.get("value") if f.get("type") == "boolean" else None,
-                        "value_date": f.get("value") if f.get("type") == "date" else None,
-                        "value_json": f.get("value") if f.get("type") == "multiselect" else None,
-                    })
-                if guided_rows:
-                    supabase.table("report_fields").delete().eq("report_id", report_id).not_.is_("form_field_id", "null").execute()
-                    supabase.table("report_fields").insert(guided_rows).execute()
-
-            # Itens
-            if has_items and extracted_items:
-                supabase.table("report_items").delete().eq("report_id", report_id).execute()
-                for position, item in enumerate(extracted_items):
-                    item_resp = supabase.table("report_items").insert({
-                        "id": item.get("id") or f"item_{position}",
-                        "report_id": report_id,
-                        "position": position,
-                    }).execute()
-                    if item_resp.data:
-                        item_id = item_resp.data[0]["id"]
-                        item_field_rows = []
-                        for f in item.get("fields") or []:
-                            item_field_rows.append({
-                                "report_item_id": item_id,
-                                "form_field_id": None,
-                                "confidence": f.get("confidence"),
-                                "source": "ai",
-                                "was_edited": False,
-                                "value_text": f.get("value") if f.get("type") in ("text", "long_text", "select") else None,
-                                "value_number": f.get("value") if f.get("type") in ("number", "decimal") else None,
-                                "value_boolean": f.get("value") if f.get("type") == "boolean" else None,
-                                "value_date": f.get("value") if f.get("type") == "date" else None,
-                                "value_json": f.get("value") if f.get("type") == "multiselect" else None,
-                            })
-                        if item_field_rows:
-                            supabase.table("report_item_fields").insert(item_field_rows).execute()
-
+            photos.append((data, validate_media_bytes(data, "image")))
         else:
-            # match="dynamic" — estrutura livre
-            dynamic_fields = result.get("dynamic_fields") or []
-            dynamic_items = result.get("dynamic_items") or []
-            context_label = result.get("context_label") or "Informação organizada"
-            context_type = result.get("context_type") or "informacao"
+            mime = validate_media_bytes(data, "audio")
+            # Falha de STT propaga: é transitória na maioria dos casos, e seguir
+            # só com o resto da captura geraria um relatório incompleto "done".
+            transcript = (await transcribe_audio(data, mime)).strip()
+            transcripts.append(transcript)
+            if transcript:
+                await asyncio.to_thread(_save_transcript, db, capture["id"], transcript)
 
-            update_data = {
-                "extraction_status": EXTRACTION_DONE,
-                "extraction_attempts": (report.get("extraction_attempts") or 0) + 1,
-                "extraction_last_error": None,
-                "form_template_id": None,
-                "form_template_name": None,
-                "context_label": context_label,
-                "context_type": context_type,
-                "updated_at": datetime.utcnow().isoformat(),
+    parts = [t for t in transcripts if t]
+    if typed:
+        parts.append(("[Texto digitado adicional]:\n" if parts else "") + "\n\n".join(typed))
+    return photos, ("\n\n".join(parts) or None)
+
+
+# ─── IA ────────────────────────────────────────────────────────────────────
+
+async def _run_ai(db, report: dict, photos, text) -> dict:
+    """Devolve a estrutura pronta para gravar: com "template" (formulário
+    existente: template_fields/fields/items) ou sem ele (dynamic_fields/
+    dynamic_items + context_label/context_type)."""
+    purpose = report.get("extraction_purpose")
+    purpose = purpose if purpose in EXTRACTION_PURPOSES else None
+    instruction = (report.get("extraction_custom_instruction") or "").strip() or None
+
+    # Formulário já escolhido pelo usuário: extrai só os campos de nível de
+    # relatório (como o app fazia); itens repetidos ficam para preenchimento manual.
+    chosen_id = report.get("form_template_id")
+    if chosen_id:
+        loaded = await asyncio.to_thread(_load_template, db, chosen_id)
+        if loaded:
+            template, template_fields = loaded
+            hints = [
+                FieldHint(
+                    key=f["key"], label=f["label"], type=f["type"],
+                    extraction_hint=f.get("extraction_hint"),
+                )
+                for f in template_fields if not f.get("is_item_field")
+            ]
+            extracted = await asyncio.wait_for(
+                gemini_service.refine_fields(hints, photos, text), AI_TIMEOUT_SECONDS
+            )
+            return {
+                "template": template, "template_fields": template_fields,
+                "fields": [e.model_dump() for e in extracted], "items": [],
             }
-            supabase.table("reports").update(update_data).eq("id", report_id).execute()
+        logger.warning("Formulário %s não existe/está inativo; extraindo no modo automático.", chosen_id)
 
-            # Grava dynamic fields
-            if dynamic_fields:
-                dynamic_rows = []
-                for f in dynamic_fields:
-                    dynamic_rows.append({
-                        "report_id": report_id,
-                        "form_field_id": None,
-                        "confidence": f.get("confidence"),
-                        "source": "ai",
-                        "was_edited": False,
-                        "dynamic_key": f.get("key"),
-                        "dynamic_label": f.get("label"),
-                        "dynamic_type": f.get("type", "text"),
-                        "value_text": f.get("value") if f.get("type") in ("text", "long_text", "select") else None,
-                        "value_number": f.get("value") if f.get("type") in ("number", "decimal") else None,
-                        "value_boolean": f.get("value") if f.get("type") == "boolean" else None,
-                        "value_date": f.get("value") if f.get("type") == "date" else None,
-                        "value_json": f.get("value") if f.get("type") == "multiselect" else None,
-                    })
-                if dynamic_rows:
-                    supabase.table("report_fields").delete().eq("report_id", report_id).is_("form_field_id", "null").execute()
-                    supabase.table("report_fields").insert(dynamic_rows).execute()
+    # Modo automático: a IA classifica contra o catálogo ou estrutura livremente.
+    catalog = await asyncio.to_thread(fetch_template_catalog, db)
+    result = await asyncio.wait_for(
+        gemini_service.classify_and_extract(catalog, photos, text, purpose, instruction),
+        AI_TIMEOUT_SECONDS,
+    )
 
-            # Dynamic items
-            if dynamic_items:
-                supabase.table("report_items").delete().eq("report_id", report_id).execute()
-                for position, item in enumerate(dynamic_items):
-                    item_resp = supabase.table("report_items").insert({
-                        "id": item.get("id") or f"item_{position}",
-                        "report_id": report_id,
-                        "position": position,
-                    }).execute()
-                    if item_resp.data:
-                        item_id = item_resp.data[0]["id"]
-                        item_field_rows = []
-                        for f in item.get("fields") or []:
-                            item_field_rows.append({
-                                "report_item_id": item_id,
-                                "form_field_id": None,
-                                "confidence": f.get("confidence"),
-                                "source": "ai",
-                                "was_edited": False,
-                                "value_text": f.get("value") if f.get("type") in ("text", "long_text", "select") else None,
-                                "value_number": f.get("value") if f.get("type") in ("number", "decimal") else None,
-                                "value_boolean": f.get("value") if f.get("type") == "boolean" else None,
-                                "value_date": f.get("value") if f.get("type") == "date" else None,
-                                "value_json": f.get("value") if f.get("type") == "multiselect" else None,
-                            })
-                        if item_field_rows:
-                            supabase.table("report_item_fields").insert(item_field_rows).execute()
+    if result.get("match") == "existing" and result.get("template_id"):
+        loaded = await asyncio.to_thread(_load_template, db, result["template_id"])
+        if loaded:
+            template, template_fields = loaded
+            return {
+                "template": template, "template_fields": template_fields,
+                "fields": result.get("fields") or [],
+                "items": (result.get("items") or []) if template.get("has_items") else [],
+            }
+        logger.warning("IA indicou formulário inexistente %s; usando estrutura dinâmica.", result.get("template_id"))
 
-        # 7. Envia push notification via Expo Push API
-        await _send_push_notification(report_id, context_label if match != "existing" else template_name)
-
-        logger.info("Extração concluída para relatório %s", report_id)
-        return True
-
-    except Exception as e:
-        logger.exception("Falha no worker de extração para %s: %s", report_id, e)
-        supabase.table("reports").update({
-            "extraction_status": EXTRACTION_FAILED,
-            "extraction_attempts": (report.get("extraction_attempts") or 0) + 1,
-            "extraction_last_error": str(e),
-            "updated_at": datetime.utcnow().isoformat(),
-        }).eq("id", report_id).execute()
-        return False
+    if not result.get("dynamic_fields") and not result.get("dynamic_items"):
+        raise ValueError("A IA não retornou nem um formulário válido nem uma estrutura dinâmica.")
+    return {
+        "template": None,
+        "dynamic_fields": result.get("dynamic_fields") or [],
+        "dynamic_items": result.get("dynamic_items") or [],
+        "context_label": result.get("context_label") or "Informação organizada",
+        "context_type": result.get("context_type") or "informacao",
+    }
 
 
-async def _send_push_notification(report_id: str, label: str):
-    """Envia notificação via Expo Push API para todos os tokens do dono do relatório."""
-    supabase = get_client()
+# ─── persistência ──────────────────────────────────────────────────────────
 
-    # Busca user_id do relatório
-    report_resp = supabase.table("reports").select("user_id").eq("id", report_id).execute()
-    if not report_resp.data:
-        return
-    user_id = report_resp.data[0].get("user_id")
-    if not user_id:
-        return
+def _guided_rows(owner: dict, template_fields: list[dict], extracted: list[dict], *, items: bool) -> list[dict]:
+    by_key = {f["key"]: f for f in template_fields if bool(f.get("is_item_field")) == items}
+    rows = []
+    for e in extracted:
+        field = by_key.get(e.get("key"))
+        if not field:
+            continue
+        row = _field_row(
+            owner, key=field["key"], label=field["label"], field_type=field["type"],
+            raw_value=e.get("value"), confidence=e.get("confidence"),
+            source=e.get("source"), form_field_id=field["id"],
+        )
+        if row:
+            rows.append(row)
+    return rows
 
-    # Busca tokens ativos
-    tokens_resp = supabase.table("push_tokens").select("expo_push_token").eq("user_id", user_id).eq("active", True).execute()
-    tokens = [row["expo_push_token"] for row in tokens_resp.data or []]
-    if not tokens:
-        return
 
+def _dynamic_rows(owner: dict, fields: list[dict]) -> list[dict]:
+    rows = []
+    for f in fields:
+        key = f.get("key") or ""
+        row = _field_row(
+            owner, key=key, label=f.get("label") or key,
+            field_type=f.get("type") or "text", raw_value=f.get("value"),
+            confidence=f.get("confidence"), source=f.get("source"), form_field_id=None,
+        )
+        if row and key:
+            rows.append(row)
+    return rows
+
+
+def _persist(db, report_id: str, structure: dict) -> str:
+    """Grava campos/itens e fecha o relatório como 'done'. Idempotente: um retry
+    apaga e regrava. Devolve o rótulo para a notificação."""
+    current = db.table("reports").select("extraction_status").eq("id", report_id).execute().data
+    if not current or current[0]["extraction_status"] != EXTRACTION_PROCESSING:
+        raise ExtractionSuperseded(report_id)
+
+    template = structure["template"]
+    if template:
+        template_fields = structure["template_fields"]
+        field_rows = _guided_rows({"report_id": report_id}, template_fields, structure["fields"], items=False)
+        item_rows = [
+            _guided_rows({}, template_fields, item.get("fields") or [], items=True)
+            for item in structure["items"]
+        ]
+        item_rows = [rows for rows in item_rows if rows]
+        has_item_fields = any(f.get("is_item_field") for f in template_fields)
+        if template.get("has_items") and has_item_fields and not item_rows:
+            item_rows = [[]]  # um item vazio para preencher manualmente (como no app)
+        report_update = {"form_template_id": template["id"], "context_label": template["name"]}
+        label = template["name"]
+    else:
+        field_rows = _dynamic_rows({"report_id": report_id}, structure["dynamic_fields"])
+        item_rows = [
+            _dynamic_rows({}, item.get("fields") or []) for item in structure["dynamic_items"]
+        ]
+        item_rows = [rows for rows in item_rows if rows]
+        report_update = {
+            "form_template_id": None,
+            "context_label": structure["context_label"],
+            "context_type": structure["context_type"],
+        }
+        label = structure["context_label"]
+
+    db.table("report_fields").delete().eq("report_id", report_id).execute()
+    if field_rows:
+        db.table("report_fields").insert(field_rows).execute()
+
+    db.table("report_items").delete().eq("report_id", report_id).execute()  # cascade nos item_fields
+    for position, rows in enumerate(item_rows):
+        item_id = str(uuid.uuid4())
+        db.table("report_items").insert(
+            {"id": item_id, "report_id": report_id, "position": position}
+        ).execute()
+        if rows:
+            db.table("report_item_fields").insert(
+                [{**r, "report_item_id": item_id} for r in rows]
+            ).execute()
+
+    closed = (
+        db.table("reports")
+        .update({**report_update, "extraction_status": EXTRACTION_DONE, "extraction_last_error": None})
+        .eq("id", report_id)
+        .eq("extraction_status", EXTRACTION_PROCESSING)
+        .execute()
+    )
+    if not closed.data:
+        raise ExtractionSuperseded(report_id)
+    return label
+
+
+# ─── push ──────────────────────────────────────────────────────────────────
+
+def _push_targets(db, report_id: str) -> tuple[list[str], str | None]:
+    rows = db.table("reports").select("user_id,context_label").eq("id", report_id).execute().data
+    if not rows or not rows[0].get("user_id"):
+        return [], None
+    tokens = (
+        db.table("push_tokens").select("expo_push_token")
+        .eq("user_id", rows[0]["user_id"]).eq("active", True).execute().data
+    ) or []
+    return [t["expo_push_token"] for t in tokens], rows[0].get("context_label")
+
+
+def _deactivate_tokens(db, tokens: list[str]) -> None:
+    db.table("push_tokens").update({"active": False}).in_("expo_push_token", tokens).execute()
+
+
+async def _notify(db, report_id: str, *, failed: bool, label: str | None = None) -> None:
+    """Best-effort: falha de push nunca desfaz uma extração concluída."""
     try:
+        tokens, stored_label = await asyncio.to_thread(_push_targets, db, report_id)
+        if not tokens:
+            return
+        label = label or stored_label or "Seu relatório"
+        title = "Não foi possível extrair" if failed else "Extração concluída"
+        body = (
+            f"{label}: a IA não conseguiu extrair os dados. Abra para preencher manualmente."
+            if failed else f"{label} está pronto para revisão."
+        )
         messages = [{
-            "to": token,
-            "title": "Extração concluída",
-            "body": f"{label} está pronto para revisão.",
-            "data": {"reportId": report_id, "type": "extraction_complete"},
-            "sound": "default",
-            "priority": "high",
+            "to": token, "title": title, "body": body, "sound": "default", "priority": "high",
+            "data": {
+                "reportId": report_id,
+                "type": "extraction_failed" if failed else "extraction_complete",
+            },
         } for token in tokens]
 
         async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(_EXPO_PUSH_URL, json=messages)
-    except Exception as e:
-        logger.warning("Falha ao enviar push para %s: %s", report_id, e)
+            resp = await client.post(_EXPO_PUSH_URL, json=messages)
+        tickets = resp.json().get("data", []) if resp.status_code == 200 else []
+
+        # Aparelho desinstalado/token revogado: para de tentar nesse token.
+        dead = [
+            token for token, ticket in zip(tokens, tickets)
+            if ticket.get("status") == "error"
+            and (ticket.get("details") or {}).get("error") == "DeviceNotRegistered"
+        ]
+        if dead:
+            await asyncio.to_thread(_deactivate_tokens, db, dead)
+    except Exception:
+        logger.warning("Falha ao enviar push do relatório %s", report_id, exc_info=True)
 
 
-async def process_pending_extractions(limit: int = 50) -> dict:
-    """
-    Job periódico: busca relatórios com extraction_status='pending' (ou 'processing' há > 5min)
-    e processa até `limit` deles.
-    """
-    supabase = get_client()
+# ─── orquestração ──────────────────────────────────────────────────────────
 
-    # Pega pendentes + processing travados há mais de 5 min
-    five_min_ago = (datetime.utcnow() - timedelta(minutes=5)).isoformat()
+async def run_auto_extraction(report_id: str, attempts: int = 0) -> str:
+    """Extrai um relatório 'pending'. Retorna 'done' | 'retry' | 'failed' | 'skipped'."""
+    db = get_admin_client()
 
-    resp = supabase.table("reports").select("id").in_("extraction_status", [
-        EXTRACTION_PENDING, EXTRACTION_PROCESSING
-    ]).lte("updated_at", five_min_ago).order("updated_at").limit(limit).execute()
+    if attempts >= MAX_ATTEMPTS:
+        if await asyncio.to_thread(_mark_exhausted, db, report_id):
+            await _notify(db, report_id, failed=True)
+            return "failed"
+        return "skipped"
 
-    reports = resp.data or []
-    logger.info("Worker: processando %d relatórios pendentes", len(reports))
+    if not await asyncio.to_thread(_claim, db, report_id, attempts):
+        return "skipped"  # outro worker pegou, ou o status mudou
 
-    results = {"processed": 0, "succeeded": 0, "failed": 0}
-    for report in reports:
-        success = await run_auto_extraction(report["id"])
+    try:
+        report = await asyncio.to_thread(_load_report, db, report_id)
+        if not report:
+            raise MediaError("Relatório não encontrado.")
+        photos, text = await _resolve_media(db, report)
+        if not photos and not text:
+            raise MediaError("Não há foto, áudio ou texto utilizável para extrair.")
+        structure = await _run_ai(db, report, photos, text)
+        label = await asyncio.to_thread(_persist, db, report_id, structure)
+    except ExtractionSuperseded:
+        logger.info("Relatório %s mudou durante a extração; resultado descartado.", report_id)
+        return "skipped"
+    except Exception as exc:
+        logger.exception("Falha na extração do relatório %s (tentativa %d)", report_id, attempts + 1)
+        message, retryable = public_ai_error(exc)
+        final = (not retryable) or attempts + 1 >= MAX_ATTEMPTS
+        await asyncio.to_thread(_finish_failure, db, report_id, message, final)
+        if final:
+            await _notify(db, report_id, failed=True)
+        return "failed" if final else "retry"
+
+    await _notify(db, report_id, failed=False, label=label)
+    logger.info("Extração concluída para o relatório %s", report_id)
+    return "done"
+
+
+async def process_pending_extractions(limit: int = 20) -> dict:
+    """Uma passada do worker: reabre 'processing' travado e processa até
+    `limit` relatórios 'pending' (sem atraso mínimo — o backend só marca
+    'pending' depois de a mídia estar no Storage)."""
+    db = get_admin_client()
+    await asyncio.to_thread(_release_stale_processing, db)
+    pending = await asyncio.to_thread(_list_pending, db, limit)
+    logger.info("Worker: %d relatório(s) pendente(s)", len(pending))
+
+    results = {"processed": 0, "succeeded": 0, "failed": 0, "retry": 0, "skipped": 0}
+    for row in pending:
+        outcome = await run_auto_extraction(row["id"], row.get("extraction_attempts") or 0)
         results["processed"] += 1
-        if success:
-            results["succeeded"] += 1
-        else:
-            results["failed"] += 1
-
-    return results
-
-
-# Endpoint interno protegido para o job cron chamar (Render Cron Job)
-async def extraction_job_endpoint():
-    """Endpoint para Render Cron Job bater (ex: a cada 5 min)."""
-    # Proteção simples: header secreto
-    # Em produção, usar auth real ou IP allowlist
-    results = await process_pending_extractions()
+        key = {"done": "succeeded", "failed": "failed", "retry": "retry"}.get(outcome, "skipped")
+        results[key] += 1
     return results
