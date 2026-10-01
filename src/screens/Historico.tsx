@@ -8,7 +8,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { StorageService } from '../storage/StorageService';
 import { fetchRemoteReports, deleteRemoteReport } from '../services/api/reports/ReportsService';
 import { syncReport } from '../services/sync/SyncService';
+<<<<<<< HEAD
+import { exportReportAsPdf } from '../services/pdf/ReportPdfService';
+=======
 import { openReportPdf } from '../services/pdf/ReportPdfService';
+>>>>>>> main
 import { NetworkError, ApiError } from '../services/api/apiClient';
 import { Report, ReportField, FieldValue } from '../types/reports';
 import { purposeLabel } from '../constants/extractionPurpose';
@@ -314,7 +318,11 @@ export default function HistoricoScreen() {
     if (exportingId) return;
     setExportingId(report.id);
     try {
+<<<<<<< HEAD
+      await exportReportAsPdf(report);
+=======
       await openReportPdf(report);
+>>>>>>> main
     } catch (err) {
       Alert.alert(
         'Não foi possível gerar o PDF',

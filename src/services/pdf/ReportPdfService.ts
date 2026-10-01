@@ -1,4 +1,16 @@
 // src/services/pdf/ReportPdfService.ts
+<<<<<<< HEAD
+// Exporta um Report como PDF (expo-print) e abre o menu de compartilhar do
+// sistema (expo-sharing). Todo o texto do documento vem de
+// utils/reportPdfHtml.ts — aqui fica só o I/O: ler as fotos, gerar o
+// arquivo, renomear e compartilhar.
+import { Platform } from 'react-native';
+import * as Print from 'expo-print';
+import * as Sharing from 'expo-sharing';
+import * as FileSystem from 'expo-file-system/legacy';
+import { Capture, Report } from '../../types/reports';
+import { buildReportPdfHtml, reportPdfFileName, reportTitle } from '../../utils/reportPdfHtml';
+=======
 // Gera o PDF de um Report (expo-print) e o abre para visualização. Todo o
 // texto do documento vem de utils/reportPdfHtml.ts — aqui fica só o I/O:
 // ler as fotos, gerar o arquivo e abri-lo. Compartilhar/salvar fica por
@@ -9,6 +21,7 @@ import * as IntentLauncher from 'expo-intent-launcher';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Capture, Report } from '../../types/reports';
 import { buildReportPdfHtml, reportPdfFileName } from '../../utils/reportPdfHtml';
+>>>>>>> main
 
 // A4 em pontos (72 dpi) — o padrão do expo-print é US Letter.
 const A4_WIDTH = 595;
@@ -68,12 +81,19 @@ async function loadImages(report: Report): Promise<Record<string, string>> {
   return images;
 }
 
+<<<<<<< HEAD
+/** Gera o PDF do relatório e abre o compartilhar do sistema (salvar em
+ * Arquivos, WhatsApp, e-mail...). Lança Error com mensagem legível se algo
+ * falhar — quem chama decide como avisar o usuário. Devolve o uri do PDF. */
+export async function exportReportAsPdf(report: Report): Promise<string | null> {
+=======
 /** Gera o PDF do relatório e abre para visualização — não compartilha.
  * No Android abre o leitor de PDF do aparelho; no iOS (e no Android sem
  * leitor de PDF) abre a pré-visualização de impressão do sistema. Lança
  * Error com mensagem legível se algo falhar — quem chama decide como avisar
  * o usuário. Devolve o uri do PDF (null na web). */
 export async function openReportPdf(report: Report): Promise<string | null> {
+>>>>>>> main
   const images = await loadImages(report);
   const html = buildReportPdfHtml(report, {
     images,
@@ -97,11 +117,19 @@ export async function openReportPdf(report: Report): Promise<string | null> {
   });
 
   // O expo-print grava numa pasta própria (nome = UUID) que, no Android —
+<<<<<<< HEAD
+  // principalmente no Expo Go —, o expo-sharing não tem permissão de ler
+  // ("Not allowed to read file under given URL"). Por isso o PDF é regravado
+  // no cache do app, com nome reconhecível: é uma pasta que o expo-sharing
+  // sempre consegue ler. (Renomear com moveAsync não serve: ele também
+  // precisa ler a pasta de origem.)
+=======
   // principalmente no Expo Go —, os outros módulos não têm permissão de ler
   // ("Not allowed to read file under given URL"). Por isso o PDF é regravado
   // no cache do app, com nome reconhecível (é o nome que o leitor de PDF
   // mostra). Renomear com moveAsync não serve: ele também precisa ler a
   // pasta de origem.
+>>>>>>> main
   let uri = tempUri;
   try {
     if (!base64) throw new Error('expo-print não devolveu o conteúdo do PDF.');
@@ -112,6 +140,19 @@ export async function openReportPdf(report: Report): Promise<string | null> {
     uri = target;
     FileSystem.deleteAsync(tempUri, { idempotent: true }).catch(() => {});
   } catch {
+<<<<<<< HEAD
+    // Se não conseguir regravar, tenta compartilhar o arquivo original.
+  }
+
+  if (!(await Sharing.isAvailableAsync())) {
+    throw new Error('Este dispositivo não permite compartilhar arquivos.');
+  }
+  await Sharing.shareAsync(uri, {
+    mimeType: 'application/pdf',
+    UTI: 'com.adobe.pdf',
+    dialogTitle: `Exportar "${reportTitle(report)}"`,
+  });
+=======
     // Se não conseguir regravar, tenta abrir o arquivo original.
   }
 
@@ -135,5 +176,6 @@ export async function openReportPdf(report: Report): Promise<string | null> {
   // iOS: mostra a pré-visualização do sistema, de onde dá para compartilhar
   // ou salvar em Arquivos.
   await Print.printAsync({ uri });
+>>>>>>> main
   return uri;
 }

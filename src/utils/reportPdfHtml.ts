@@ -76,6 +76,10 @@ function metaLine(label: string, value: string | null | undefined): string {
   return value ? `<div><span class="meta-label">${escapeHtml(label)}:</span> ${escapeHtml(value)}</div>` : '';
 }
 
+<<<<<<< HEAD
+function fieldsTable(fields: ReportField[]): string {
+  const rows = fields
+=======
 /** Um campo do template pode vir sem valor porque não fazia sentido pra
  * essa extração (ex: template genérico com campo que não se aplica a este
  * conteúdo específico) — nesses casos ele não deve aparecer no relatório
@@ -89,12 +93,26 @@ function fieldsTable(fields: ReportField[]): string {
   const filled = fields.filter(isFilled);
   if (filled.length === 0) return '';
   const rows = filled
+>>>>>>> main
     .map((f) => `<tr><th>${escapeHtml(f.label)}</th><td>${valueHtml(f)}</td></tr>`)
     .join('');
   return `<table class="kv">${rows}</table>`;
 }
 
 function itemsSection(items: ReportItem[]): string {
+<<<<<<< HEAD
+  // Colunas = união das keys de todos os itens, na ordem em que aparecem.
+  const columns: { key: string; label: string }[] = [];
+  for (const item of items) {
+    for (const f of item.fields) {
+      if (!columns.some((c) => c.key === f.key)) columns.push({ key: f.key, label: f.label });
+    }
+  }
+
+  const title = `<h2>Itens (${items.length})</h2>`;
+
+  if (columns.length <= MAX_ITEM_TABLE_COLUMNS) {
+=======
   const title = `<h2>Itens (${items.length})</h2>`;
 
   // Cada item fica só com os campos que têm valor — um campo que não fazia
@@ -114,12 +132,20 @@ function itemsSection(items: ReportItem[]): string {
   const columns = uniform ? filledPerItem[0].map((f) => ({ key: f.key, label: f.label })) : [];
 
   if (uniform && columns.length > 0 && columns.length <= MAX_ITEM_TABLE_COLUMNS) {
+>>>>>>> main
     const head = `<tr><th class="idx">#</th>${columns.map((c) => `<th>${escapeHtml(c.label)}</th>`).join('')}</tr>`;
     const body = items
       .map((item, i) => {
         const cells = columns
+<<<<<<< HEAD
+          .map((c) => {
+            const f = item.fields.find((x) => x.key === c.key);
+            return `<td>${f ? valueHtml(f) : EMPTY}</td>`;
+          })
+=======
           .map((c) => valueHtml(item.fields.find((x) => x.key === c.key)!))
           .map((v) => `<td>${v}</td>`)
+>>>>>>> main
           .join('');
         return `<tr><td class="idx">${i + 1}</td>${cells}</tr>`;
       })
@@ -128,6 +154,10 @@ function itemsSection(items: ReportItem[]): string {
   }
 
   const blocks = items
+<<<<<<< HEAD
+    .map((item, i) => `<div class="item"><h3>Item ${i + 1}</h3>${fieldsTable(item.fields)}</div>`)
+    .join('');
+=======
     .map((item, i) => {
       const table = fieldsTable(item.fields);
       return table ? `<div class="item"><h3>Item ${i + 1}</h3>${table}</div>` : '';
@@ -135,17 +165,32 @@ function itemsSection(items: ReportItem[]): string {
     .filter(Boolean)
     .join('');
   if (!blocks) return '';
+>>>>>>> main
   return `${title}${blocks}`;
 }
 
 function capturesSection(captures: Capture[], images: Record<string, string>): string {
   const parts: string[] = [];
+<<<<<<< HEAD
+  let voiceCount = 0;
+=======
   let voiceWithoutTranscript = 0;
+>>>>>>> main
 
   for (const c of captures) {
     if (c.type === 'photo' && images[c.id]) {
       parts.push(`<figure><img src="${images[c.id]}" /></figure>`);
     } else if (c.type === 'text' && c.text_content?.trim()) {
+<<<<<<< HEAD
+      parts.push(`<blockquote>${escapeHtml(c.text_content.trim())}</blockquote>`);
+    } else if (c.type === 'voice') {
+      voiceCount++;
+    }
+  }
+  if (voiceCount > 0) {
+    parts.push(
+      `<p class="note">${voiceCount === 1 ? '1 gravação de áudio' : `${voiceCount} gravações de áudio`} usada${voiceCount === 1 ? '' : 's'} na extração (não incluída${voiceCount === 1 ? '' : 's'} no PDF).</p>`,
+=======
       parts.push(
         `<div class="capture-label">Texto digitado</div><blockquote>${escapeHtml(c.text_content.trim())}</blockquote>`,
       );
@@ -166,6 +211,7 @@ function capturesSection(captures: Capture[], images: Record<string, string>): s
   if (voiceWithoutTranscript > 0) {
     parts.push(
       `<p class="note">${voiceWithoutTranscript === 1 ? '1 gravação de áudio' : `${voiceWithoutTranscript} gravações de áudio`} usada${voiceWithoutTranscript === 1 ? '' : 's'} na extração, sem transcrição disponível (áudio não incluído no PDF).</p>`,
+>>>>>>> main
     );
   }
   return parts.length > 0 ? `<h2>Capturas originais</h2>${parts.join('')}` : '';
@@ -186,8 +232,12 @@ export function buildReportPdfHtml(report: Report, options: ReportPdfHtmlOptions
   const summary = report.ai_summary?.trim()
     ? `<div class="summary">${escapeHtml(report.ai_summary.trim())}</div>`
     : '';
+<<<<<<< HEAD
+  const fields = report.fields.length > 0 ? `<h2>Informações extraídas</h2>${fieldsTable(report.fields)}` : '';
+=======
   const fieldsTableHtml = fieldsTable(report.fields);
   const fields = fieldsTableHtml ? `<h2>Informações extraídas</h2>${fieldsTableHtml}` : '';
+>>>>>>> main
   const items = report.items.length > 0 ? itemsSection(report.items) : '';
   const captures = capturesSection(report.captures, images);
   const hasContent = Boolean(fields || items);
@@ -222,7 +272,10 @@ export function buildReportPdfHtml(report: Report, options: ReportPdfHtmlOptions
   figure { margin: 0 0 12px; text-align: center; page-break-inside: avoid; }
   figure img { max-width: 100%; max-height: 420px; border: 1px solid #e6e8f4; border-radius: 4px; }
   blockquote { margin: 0 0 12px; padding: 8px 12px; background: #f8f9fd; border-left: 3px solid #d7daf0; white-space: pre-wrap; overflow-wrap: anywhere; }
+<<<<<<< HEAD
+=======
   .capture-label { font-size: 10px; font-weight: 700; color: #9599b3; text-transform: uppercase; letter-spacing: 0.4px; margin: 0 0 4px; }
+>>>>>>> main
   .note { color: #5c6079; font-style: italic; margin: 6px 0; }
   .footer { margin-top: 28px; padding-top: 8px; border-top: 1px solid #e6e8f4; font-size: 10px; color: #9599b3; }
 </style>
@@ -245,4 +298,8 @@ export function buildReportPdfHtml(report: Report, options: ReportPdfHtmlOptions
   <div class="footer">Gerado em ${formatDateTime(generatedAt)} · Campo — Análise de Dados</div>
 </body>
 </html>`;
+<<<<<<< HEAD
 }
+=======
+}
+>>>>>>> main

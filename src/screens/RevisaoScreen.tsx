@@ -19,7 +19,11 @@ import { parseFieldValue } from '../utils/fieldValue';
 import { purposeIcon, purposeLabel } from '../constants/extractionPurpose';
 import { refineFields, toRefineTargetFields, RefineTargetField } from '../services/api/ai/RefineService';
 import { summarizeReport } from '../services/api/ai/SummaryService';
+<<<<<<< HEAD
+import { exportReportAsPdf } from '../services/pdf/ReportPdfService';
+=======
 import { openReportPdf } from '../services/pdf/ReportPdfService';
+>>>>>>> main
 import { colors, radius, shadows, spacing } from '../theme';
 
 function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
@@ -442,15 +446,25 @@ export function RevisaoScreen() {
     }
   }
 
+<<<<<<< HEAD
+  // ─── exportar PDF ─────────────────────────────────────────────────────────
+
+  /** Exporta o que está na tela agora (inclui edições ainda não salvas) —
+=======
   // ─── visualizar PDF ───────────────────────────────────────────────────────
 
   /** Abre o PDF do que está na tela agora (inclui edições ainda não salvas) —
+>>>>>>> main
    * não depende de salvar antes. */
   async function handleExportPdf() {
     if (!report || exportingPdf) return;
     setExportingPdf(true);
     try {
+<<<<<<< HEAD
+      await exportReportAsPdf(report);
+=======
       await openReportPdf(report);
+>>>>>>> main
     } catch (err) {
       Alert.alert(
         'Não foi possível gerar o PDF',
@@ -612,7 +626,11 @@ export function RevisaoScreen() {
               <Ionicons name="document-outline" size={20} color={colors.primary} />
             )}
             <Text style={styles.exportButtonText}>
+<<<<<<< HEAD
+              {exportingPdf ? 'Gerando PDF…' : 'Exportar PDF'}
+=======
               {exportingPdf ? 'Gerando PDF…' : 'Visualizar PDF'}
+>>>>>>> main
             </Text>
           </TouchableOpacity>
 
