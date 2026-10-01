@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -11,6 +12,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../services/auth/supabaseClient';
+import { warmUpBackend } from '../services/api/apiClient';
 import { colors, radius, shadows, spacing } from '../theme';
 
 export default function LoginScreen() {
@@ -18,6 +20,7 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [showPassword, setShowPassword] = useState(false);
 
   async function handleLogin() {
     const normalizedEmail = email.trim();
@@ -29,6 +32,11 @@ export default function LoginScreen() {
 
     setLoading(true);
     setErrorMessage(null);
+
+    // Reforça o "acordar" do backend no exato momento do login — se o app
+    // ficou um tempo parado nesta tela, o Render pode ter hibernado de novo
+    // desde o warm-up disparado na abertura do app.
+    warmUpBackend();
 
     try {
       const { error } = await supabase.auth.signInWithPassword({
@@ -55,9 +63,14 @@ export default function LoginScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.safe}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={0}
     >
-      <View style={styles.container}>
+      <ScrollView
+        contentContainerStyle={styles.container}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         <View style={styles.content}>
           <View style={styles.iconContainer}>
             <Ionicons name="lock-closed" size={30} color={colors.primary} />
@@ -88,22 +101,35 @@ export default function LoginScreen() {
             />
 
             <Text style={styles.label}>Senha</Text>
-            <TextInput
-              value={password}
-              onChangeText={(value) => {
-                setPassword(value);
-                setErrorMessage(null);
-              }}
-              placeholder="Sua senha"
-              placeholderTextColor={colors.textMuted}
-              secureTextEntry
-              textContentType="password"
-              autoComplete="password"
-              editable={!loading}
-              style={styles.input}
-              onSubmitEditing={handleLogin}
-              returnKeyType="done"
-            />
+            <View style={styles.passwordWrapper}>
+              <TextInput
+                value={password}
+                onChangeText={(value) => {
+                  setPassword(value);
+                  setErrorMessage(null);
+                }}
+                placeholder="Sua senha"
+                placeholderTextColor={colors.textMuted}
+                secureTextEntry={!showPassword}
+                textContentType="password"
+                autoComplete="password"
+                editable={!loading}
+                style={styles.input}
+                onSubmitEditing={handleLogin}
+                returnKeyType="done"
+              />
+              <TouchableOpacity
+                style={styles.passwordToggle}
+                onPress={() => setShowPassword((prev) => !prev)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons
+                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                  size={20}
+                  color={colors.textMuted}
+                />
+              </TouchableOpacity>
+            </View>
 
             {errorMessage ? (
               <View style={styles.errorBox}>
@@ -129,7 +155,7 @@ export default function LoginScreen() {
             </TouchableOpacity>
           </View>
         </View>
-      </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
@@ -183,6 +209,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     color: colors.textPrimary,
     marginBottom: spacing.lg,
+  },
+  passwordWrapper: {
+    position: 'relative',
+    marginBottom: spacing.lg,
+  },
+  passwordToggle: {
+    position: 'absolute',
+    right: 12,
+    top: '50%',
+    marginTop: -10,
+    padding: 4,
   },
   errorBox: {
     flexDirection: 'row',

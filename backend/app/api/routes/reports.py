@@ -251,7 +251,12 @@ def _row_to_report_out(row: dict, url_map: dict[str, str]) -> ReportOut:
         form_template_name=template.get("name") or row.get("context_label"),
         context_label=row.get("context_label"),
         context_type=row.get("context_type"),
+        extraction_purpose=row.get("extraction_purpose"),
+        extraction_custom_instruction=row.get("extraction_custom_instruction"),
         status=row["status"],
+        extraction_status=row.get("extraction_status", "not_applicable"),
+        extraction_attempts=row.get("extraction_attempts", 0),
+        extraction_last_error=row.get("extraction_last_error"),
         fields=fields,
         items=items,
         captures=captures,
@@ -407,27 +412,78 @@ def create_report(report: ReportIn):
 @router.get("/", response_model=list[ReportOut])
 def list_reports(limit: int = 100):
     supabase = get_client()
-    resp = (
-        supabase.table("reports")
-        .select(_REPORT_SELECT)
-        .order("updated_at", desc=True)
-        .limit(limit)
-        .execute()
-    )
+    try:
+        resp = (
+            supabase.table("reports")
+            .select(_REPORT_SELECT)
+            .order("updated_at", desc=True)
+            .limit(limit)
+            .execute()
+        )
+    except PostgrestAPIError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Erro ao buscar relatorios: {e.message}",
+        )
     rows = resp.data or []
     url_map = _resolve_capture_urls(rows)
     return [_row_to_report_out(row, url_map) for row in rows]
 
 
+@router.delete("/{report_id}")
+def delete_report(report_id: str):
+    """Apaga o relatorio no banco. report_fields, report_items, captures e
+    extractions tem ON DELETE CASCADE (ver migration 0001/0004), entao um
+    delete na tabela reports ja limpa tudo isso sozinho — nao precisamos
+    apagar linha por linha aqui. Arquivos no bucket 'captures' associados
+    (se houver) nao sao removidos do Storage; ficam orfaos, mas relatorios
+    "em branco" tipicamente nao tem captura com arquivo.
+
+    200 com corpo (em vez de 204 sem corpo) de proposito: apiFetch no app
+    sempre chama response.json(), que quebra num 204 sem corpo.
+
+    Fazemos um SELECT antes do DELETE, com o mesmo client (RLS do usuario
+    logado), pra distinguir "nao existe" (404) de "existe mas RLS bloqueou
+    o delete" (403) — sem essa checagem, RLS bloqueando silenciosamente
+    (delete afeta 0 linhas, sem erro) parecia com "relatorio ja nao existe".
+    """
+    supabase = get_client()
+    try:
+        existing = (
+            supabase.table("reports").select("id").eq("id", report_id).execute()
+        )
+        if not existing.data:
+            raise HTTPException(status_code=404, detail="Relatorio nao encontrado.")
+
+        resp = supabase.table("reports").delete().eq("id", report_id).execute()
+    except PostgrestAPIError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Erro ao excluir relatorio: {e.message}",
+        )
+    if not resp.data:
+        raise HTTPException(
+            status_code=403,
+            detail="Voce nao tem permissao para excluir este relatorio.",
+        )
+    return {"deleted": True}
+
+
 @router.get("/{report_id}", response_model=ReportOut)
 def get_report(report_id: str):
     supabase = get_client()
-    resp = (
-        supabase.table("reports")
-        .select(_REPORT_SELECT)
-        .eq("id", report_id)
-        .execute()
-    )
+    try:
+        resp = (
+            supabase.table("reports")
+            .select(_REPORT_SELECT)
+            .eq("id", report_id)
+            .execute()
+        )
+    except PostgrestAPIError as e:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Erro ao buscar relatorio: {e.message}",
+        )
     rows = resp.data or []
     if not rows:
         raise HTTPException(status_code=404, detail="Relatorio nao encontrado.")

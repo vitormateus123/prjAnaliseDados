@@ -6,6 +6,9 @@ export type ReportStatus = 'draft' | 'pending_sync' | 'synced' | 'error';
 export type CaptureType = 'voice' | 'photo' | 'text' | 'manual';
 export type FieldSource = 'ai' | 'manual' | 'ai_edited';
 
+// Status de extração da IA — independente do status de sincronização
+export type ExtractionStatus = 'not_applicable' | 'pending' | 'processing' | 'done' | 'failed';
+
 // Finalidade que o usuário escolhe antes de capturar, na captura automática
 // — só orienta a IA (ver _AUTO_PROMPT no backend), não define campos nem
 // funciona como template. 'OTHER' vem sempre acompanhado de customInstruction.
@@ -61,6 +64,10 @@ export interface Capture {
   // Texto digitado (captures do tipo 'text') — persistido de verdade
   // desde a criação da capture, não só usado na hora da extração.
   text_content?: string;
+  // Transcrição do áudio gerada pelo Groq (Whisper) via /extract/auto.
+  // Persistida junto à capture para exibição no CaptureOriginCard
+  // (Revisão e Histórico) sem precisar de nova chamada ao backend.
+  transcript?: string;
   // Conteúdo do arquivo em base64, só usado para montar o payload de um
   // POST /reports/ (ver SyncService.attachCaptureData) — nunca gravado no
   // AsyncStorage local nem exibido; existe só de passagem até o backend
@@ -133,6 +140,10 @@ export interface AutoExtractionResult {
   dynamic_fields?: DynamicExtractedField[];
   dynamic_items?: DynamicExtractedItem[];
 
+  // Transcrição do áudio gerada pelo Groq (Whisper) no backend.
+  // Presente apenas quando a captura inclui áudio; undefined caso contrário.
+  transcript?: string | null;
+
   error?: string;
   // true = vale a pena chamar /extract/auto de novo com a mesma mídia
   // (ex: sobrecarga momentânea da IA); false = tentar de novo sozinho
@@ -161,6 +172,10 @@ export interface Report {
   extraction_purpose?: ExtractionPurpose | null;
   extraction_custom_instruction?: string | null;
   status: ReportStatus;
+  // Status da extração da IA — independente do sync
+  extraction_status: ExtractionStatus;
+  extraction_attempts?: number;
+  extraction_last_error?: string | null;
   fields: ReportField[];
   items: ReportItem[];         // só preenchido quando o template tem has_items=true
   captures: Capture[];

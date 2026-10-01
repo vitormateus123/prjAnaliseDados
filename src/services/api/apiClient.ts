@@ -11,9 +11,13 @@ function normalize(url: string): string {
 
 export const BASE_URL = normalize(ENV_URL ?? EXTRA_URL ?? 'http://localhost:8000');
 
-if (!__DEV__ && !BASE_URL.startsWith('https://')) {
-  throw new Error('EXPO_PUBLIC_API_URL deve usar HTTPS em produção.');
-}
+// Mesmo raciocínio do supabaseClient: não lançar aqui em cima. Um throw no
+// carregamento do módulo mata o app antes de qualquer tela (nem a de Login
+// chega a montar). A UI decide o que fazer com o erro.
+export const apiConfigError: string | null =
+  !__DEV__ && !BASE_URL.startsWith('https://')
+    ? 'EXPO_PUBLIC_API_URL deve usar HTTPS em produção (valor atual: ' + BASE_URL + ').'
+    : null;
 
 if (__DEV__) {
   console.log('[apiClient] BASE_URL =', BASE_URL);
@@ -90,8 +94,18 @@ async function request(
 async function parseError(response: Response): Promise<never> {
   // Never expose backend internals verbatim to the UI.
   const status = response.status;
+  let detail: string | undefined;
+  try {
+    const parsed = await response.json();
+    if (typeof parsed?.detail === 'string') {
+      detail = parsed.detail;
+    }
+  } catch {
+    // Keep the generic message.
+  }
+
   if (__DEV__) {
-    console.error('[apiClient] HTTP', status);
+    console.error('[apiClient] HTTP', status, detail ?? '');
   }
 
   if (status === 401) {
@@ -108,15 +122,10 @@ async function parseError(response: Response): Promise<never> {
     throw new ApiError(500, 'O servidor encontrou um erro. Tente novamente.');
   }
 
-  let message = 'Não foi possível concluir a solicitação.';
-  try {
-    const parsed = await response.json();
-    if (typeof parsed?.detail === 'string' && parsed.detail.length < 180) {
-      message = parsed.detail;
-    }
-  } catch {
-    // Keep the generic message.
-  }
+  const message =
+    detail && detail.length < 180
+      ? detail
+      : 'Não foi possível concluir a solicitação.';
   throw new ApiError(status, message);
 }
 
@@ -144,6 +153,15 @@ export async function apiUpload<T>(path: string, formData: FormData): Promise<T>
 
   if (!response.ok) await parseError(response);
   return response.json() as Promise<T>;
+}
+
+export function warmUpBackend(): void {
+  // Fire-and-forget: no plano free do Render, o backend "hiberna" apos um
+  // tempo sem uso e a primeira requisicao real demora bem mais (cold start).
+  // Chamar /health assim que o app abre comeca esse boot em paralelo, antes
+  // de qualquer tela precisar de dados de verdade — nao aguarda a resposta
+  // nem trata erro, pois nao bloqueia nada: e so um empurrao antecipado.
+  fetch(`${BASE_URL}/health`).catch(() => {});
 }
 
 export async function checkHealth(): Promise<boolean> {

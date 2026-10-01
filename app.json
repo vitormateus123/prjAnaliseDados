@@ -45,7 +45,7 @@
       "expo-audio"
     ],
     "extra": {
-      "apiUrl": "http://localhost:8000",
+      "apiUrl": "https://prjanalisedados.onrender.com",
       "eas": {
         "projectId": "a1921378-bb43-4d5e-bb8c-a128b92d5c42"
       }

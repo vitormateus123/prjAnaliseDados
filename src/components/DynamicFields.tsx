@@ -1,15 +1,17 @@
 import {
   ActivityIndicator,
+  Modal,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
+import React from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import { ReportField } from '../types/reports';
 import { fieldValueToString } from '../utils/fieldValue';
 import { styles } from '../styles';
-import { colors } from '../theme';
+import { colors, radius, shadows } from '../theme';
 import { ConfidenceBadge } from './ConfidenceBadge';
 
 interface DynamicFieldsProps {
@@ -19,6 +21,7 @@ interface DynamicFieldsProps {
   onRegenerate?: (key: string) => void;  // pede à IA para re-extrair este campo
   regeneratingKey?: string | null;        // key do campo que está sendo refinado no momento
   showEmptyMessage?: boolean;
+  fieldKeyPrefix?: string;                // prefixo para distinguir campos de itens diferentes
 }
 
 export function DynamicFields({
@@ -28,181 +31,253 @@ export function DynamicFields({
   onRegenerate,
   regeneratingKey,
   showEmptyMessage = false,
+  fieldKeyPrefix,
 }: DynamicFieldsProps) {
+  const [tooltipField, setTooltipField] = React.useState<ReportField | null>(null);
+
+  const closeTooltip = () => setTooltipField(null);
+  const openTooltip = (field: ReportField) => setTooltipField(field);
+
   return (
-    <View>
-      {showEmptyMessage && (
-        <View style={styles.errorBox}>
-          <Text style={styles.errorText}>
-            Não foi possível extrair automaticamente.
-          </Text>
+    <>
+      <View>
+        {showEmptyMessage && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>
+              Não foi possível extrair automaticamente.
+            </Text>
 
-          <Text
-            style={{
-              fontSize: 12,
-              color: colors.dangerStrong,
-              marginTop: 2,
-            }}
-          >
-            Preencha manualmente os campos abaixo.
-          </Text>
-        </View>
-      )}
-
-      {fields.map((field) => {
-        const isFromAI =
-          field.source === 'ai' ||
-          field.source === 'ai_edited';
-
-        const value = fieldValueToString(
-          field.field_value,
-        );
-
-        /*
-         * TextInput de uma linha no React Native NÃO quebra texto — ele
-         * rola horizontalmente. Um limite de caracteres (ex: > 70) é uma
-         * aproximação ruim: a largura real depende do device, da fonte e
-         * dos caracteres em si, então valores mais curtos que o limite
-         * ainda podem estourar a largura do campo e exigir arrastar.
-         *
-         * Em vez de adivinhar por tamanho, decidimos por TIPO: qualquer
-         * campo cujo valor é texto livre (text, long_text, select,
-         * multiselect) sempre quebra linha e cresce com o conteúdo — nunca
-         * precisa de scroll horizontal. Tipos com formato curto e fixo
-         * (number, decimal, date, boolean) continuam em uma linha, já que
-         * nunca estouram a largura do campo.
-         */
-        const isMultiline =
-          field.field_value.type === 'text' ||
-          field.field_value.type === 'long_text' ||
-          field.field_value.type === 'select' ||
-          field.field_value.type === 'multiselect';
-
-        const wasEdited = field.was_edited;
-
-        return (
-          <View
-            key={field.key}
-            style={styles.field}
-          >
-            <View
+            <Text
               style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                marginBottom: 8,
-                gap: 8,
+                fontSize: 12,
+                color: colors.dangerStrong,
+                marginTop: 2,
               }}
             >
-              <Text
-                style={[
-                  styles.label,
-                  {
-                    marginBottom: 0,
-                    flex: 1,
-                  },
-                ]}
+              Preencha manualmente os campos abaixo.
+            </Text>
+          </View>
+        )}
+
+        {fields.map((field) => {
+          const isFromAI =
+            field.source === 'ai' ||
+            field.source === 'ai_edited';
+
+          const value = fieldValueToString(
+            field.field_value,
+          );
+
+          /*
+           * TextInput de uma linha no React Native NÃO quebra texto — ele
+           * rola horizontalmente. Um limite de caracteres (ex: > 70) é uma
+           * aproximação ruim: a largura real depende do device, da fonte e
+           * dos caracteres em si, então valores mais curtos que o limite
+           * ainda podem estourar a largura do campo e exigir arrastar.
+           *
+           * Em vez de adivinhar por tamanho, decidimos por TIPO: qualquer
+           * campo cujo valor é texto livre (text, long_text, select,
+           * multiselect) sempre quebra linha e cresce com o conteúdo — nunca
+           * precisa de scroll horizontal. Tipos com formato curto e fixo
+           * (number, decimal, date, boolean) continuam em uma linha, já que
+           * nunca estouram a largura do campo.
+           */
+          const isMultiline =
+            field.field_value.type === 'text' ||
+            field.field_value.type === 'long_text' ||
+            field.field_value.type === 'select' ||
+            field.field_value.type === 'multiselect';
+
+          const wasEdited = field.was_edited;
+
+          return (
+            <View
+              key={field.key}
+              style={styles.field}
+            >
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  marginBottom: 8,
+                  gap: 8,
+                }}
               >
-                {field.label}
-              </Text>
+                <Text
+                  style={[
+                    styles.label,
+                    {
+                      marginBottom: 0,
+                      flex: 1,
+                    },
+                  ]}
+                >
+                  {field.label}
+                </Text>
 
-              {isFromAI && (
-                <ConfidenceBadge
-                  confidence={field.confidence}
-                />
-              )}
+                {isFromAI && (
+                  <ConfidenceBadge
+                    confidence={field.confidence}
+                    onPress={() => openTooltip(field)}
+                  />
+                )}
 
-              {wasEdited && (
-                <Ionicons
-                  name="create-outline"
-                  size={13}
-                  color={colors.textMuted}
-                />
-              )}
+                {wasEdited && (
+                  <Ionicons
+                    name="create-outline"
+                    size={13}
+                    color={colors.textMuted}
+                  />
+                )}
 
-              {onRegenerate && (
-                regeneratingKey === field.key ? (
-                  <ActivityIndicator size="small" color={colors.primary} />
-                ) : (
+                {onRegenerate && (
+                  regeneratingKey === (fieldKeyPrefix ? `${fieldKeyPrefix}:${field.key}` : field.key) ? (
+                    <ActivityIndicator size="small" color={colors.primary} />
+                  ) : (
+                    <TouchableOpacity
+                      onPress={() => onRegenerate(field.key)}
+                      hitSlop={8}
+                      disabled={!!regeneratingKey}
+                      style={{ opacity: regeneratingKey ? 0.4 : 1 }}
+                    >
+                      <Ionicons
+                        name="refresh-outline"
+                        size={16}
+                        color={colors.primary}
+                      />
+                    </TouchableOpacity>
+                  )
+                )}
+
+                {onRemove && (
                   <TouchableOpacity
-                    onPress={() => onRegenerate(field.key)}
+                    onPress={() =>
+                      onRemove(field.key)
+                    }
                     hitSlop={8}
-                    disabled={!!regeneratingKey}
-                    style={{ opacity: regeneratingKey ? 0.4 : 1 }}
+                    disabled={
+                      !!regeneratingKey &&
+                      regeneratingKey === (fieldKeyPrefix ? `${fieldKeyPrefix}:${field.key}` : field.key)
+                    }
+                    style={{
+                      opacity:
+                        !!regeneratingKey &&
+                        regeneratingKey === (fieldKeyPrefix ? `${fieldKeyPrefix}:${field.key}` : field.key)
+                          ? 0.4
+                          : 1,
+                    }}
                   >
                     <Ionicons
-                      name="refresh-outline"
+                      name="trash-outline"
                       size={16}
-                      color={colors.primary}
+                      color={colors.danger}
                     />
                   </TouchableOpacity>
-                )
-              )}
+                )}
+              </View>
 
-              {onRemove && (
-                <TouchableOpacity
-                  onPress={() =>
-                    onRemove(field.key)
-                  }
-                  hitSlop={8}
-                  disabled={!!regeneratingKey}
-                  style={{ opacity: regeneratingKey ? 0.4 : 1 }}
-                >
-                  <Ionicons
-                    name="trash-outline"
-                    size={16}
-                    color={colors.danger}
-                  />
-                </TouchableOpacity>
-              )}
-            </View>
+              <TextInput
+                value={value}
+                onChangeText={(text) =>
+                  onChange(field.key, text)
+                }
+                multiline={isMultiline}
+                scrollEnabled={false}
+                placeholder={field.label}
+                placeholderTextColor={colors.textMuted}
+                textAlignVertical={
+                  isMultiline
+                    ? 'top'
+                    : 'center'
+                }
+                onContentSizeChange={(event) => {
+                  if (!isMultiline) return;
 
-            <TextInput
-              value={value}
-              onChangeText={(text) =>
-                onChange(field.key, text)
-              }
-              multiline={isMultiline}
-              scrollEnabled={false}
-              placeholder={field.label}
-              placeholderTextColor={colors.textMuted}
-              textAlignVertical={
-                isMultiline
-                  ? 'top'
-                  : 'center'
-              }
-              onContentSizeChange={(event) => {
-                if (!isMultiline) return;
+                  const height =
+                    event.nativeEvent.contentSize
+                      .height;
 
-                const height =
-                  event.nativeEvent.contentSize
-                    .height;
+                  // Base de 54 (mesma altura do input de uma linha) — cresce
+                  // só quando o conteúdo realmente precisa de mais espaço, em
+                  // vez de forçar 96px pra um valor curto como "São Paulo".
+                  event.currentTarget.setNativeProps({
+                    style: {
+                      height: Math.max(
+                        54,
+                        height + 24,
+                      ),
+                    },
+                  });
+                }}
+                style={[
+                  styles.input,
 
-                // Base de 54 (mesma altura do input de uma linha) — cresce
-                // só quando o conteúdo realmente precisa de mais espaço,
-                // em vez de forçar 96px pra um valor curto como "São Paulo".
-                event.currentTarget.setNativeProps({
-                  style: {
-                    height: Math.max(
-                      54,
-                      height + 24,
-                    ),
+                  isMultiline && {
+                    minHeight: 54,
+                    paddingTop: 12,
+                    paddingBottom: 12,
+                    textAlignVertical: 'top',
                   },
-                });
-              }}
-              style={[
-                styles.input,
+                ]}
+              />
+            </View>
+          );
+        })}
+      </View>
 
-                isMultiline && {
-                  minHeight: 54,
-                  paddingTop: 12,
-                  paddingBottom: 12,
-                  textAlignVertical: 'top',
-                },
-              ]}
-            />
+      <Modal
+        visible={tooltipField !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={closeTooltip}
+      >
+        <TouchableOpacity
+          style={styles.tooltipOverlay}
+          activeOpacity={1}
+          onPress={closeTooltip}
+        >
+          <View style={styles.tooltip}>
+            <View style={styles.tooltipHeader}>
+              <Ionicons name="information-circle-outline" size={16} color={colors.primary} />
+              <Text style={styles.tooltipTitle}>Confiança da IA</Text>
+            </View>
+            <Text style={styles.tooltipText}>
+              Indica o quanto a IA está segura sobre o valor extraído:
+            </Text>
+            <View style={styles.tooltipRow}>
+              <View style={[styles.dot, { backgroundColor: colors.success }]} />
+              <Text style={styles.tooltipRowText}>
+                <Text style={styles.bold}>≥80%</Text> — Alta confiança
+              </Text>
+            </View>
+            <View style={styles.tooltipRow}>
+              <View style={[styles.dot, { backgroundColor: colors.warning }]} />
+              <Text style={styles.tooltipRowText}>
+                <Text style={styles.bold}>50–79%</Text> — Média confiança
+              </Text>
+            </View>
+            <View style={styles.tooltipRow}>
+              <View style={[styles.dot, { backgroundColor: colors.danger }]} />
+              <Text style={styles.tooltipRowText}>
+                <Text style={styles.bold}>{'<'}50%</Text> — Baixa confiança
+              </Text>
+            </View>
+            {tooltipField && (
+              <View style={styles.tooltipCurrent}>
+                <Text style={styles.tooltipCurrentLabel}>
+                  Campo atual: <Text style={styles.bold}>{tooltipField.label}</Text>
+                </Text>
+                <Text style={styles.tooltipCurrentValue}>
+                  Confiança: <Text style={styles.bold}>{Math.round((tooltipField.confidence ?? 0) * 100)}%</Text>
+                </Text>
+              </View>
+            )}
+            <Text style={styles.tooltipHint}>
+              Toque fora para fechar
+            </Text>
           </View>
-        );
-      })}
-    </View>
+        </TouchableOpacity>
+      </Modal>
+    </>
   );
 }

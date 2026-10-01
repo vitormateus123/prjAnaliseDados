@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
+import { SafeAreaView, Text, StyleSheet, Linking } from 'react-native';
 import {
   NavigationContainer,
   DefaultTheme,
@@ -11,6 +12,7 @@ import {
 } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { Session } from '@supabase/supabase-js';
+import * as Notifications from 'expo-notifications';
 
 import LoginScreen from './src/screens/Login';
 import CapturaScreen from './src/screens/Captura';
@@ -20,8 +22,41 @@ import AjustesScreen from './src/screens/Ajustes';
 import { TemplatesRevisaoScreen } from './src/screens/TemplatesRevisao';
 import { GerenciarFormulariosScreen } from './src/screens/GerenciarFormularios';
 import { startAutoSync } from './src/services/sync/SyncService';
-import { supabase } from './src/services/auth/supabaseClient';
+import { startAutoExtractQueue } from './src/services/extraction/AutoExtractQueueService';
+import { supabase, supabaseConfigError } from './src/services/auth/supabaseClient';
+import { warmUpBackend, apiConfigError } from './src/services/api/apiClient';
+import { registerPushToken } from './src/services/api/devices/PushTokenService';
 import { colors } from './src/theme';
+
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  }),
+});
+
+function ConfigErrorScreen({ message }: { message: string }) {
+  return (
+    <SafeAreaView style={configErrorStyles.container}>
+      <Text style={configErrorStyles.title}>Configuração ausente</Text>
+      <Text style={configErrorStyles.message}>{message}</Text>
+      <Text style={configErrorStyles.hint}>
+        Verifique as variáveis de ambiente do build (EXPO_PUBLIC_SUPABASE_URL,
+        EXPO_PUBLIC_SUPABASE_ANON_KEY, EXPO_PUBLIC_API_URL) e gere o APK novamente.
+      </Text>
+    </SafeAreaView>
+  );
+}
+
+const configErrorStyles = StyleSheet.create({
+  container: { flex: 1, justifyContent: 'center', padding: 24, backgroundColor: '#fff' },
+  title: { fontSize: 18, fontWeight: '800', marginBottom: 12, color: '#B00020' },
+  message: { fontSize: 14, marginBottom: 16, color: '#333' },
+  hint: { fontSize: 12, color: '#666' },
+});
 
 export type MainTabParamList = {
   'Histórico': undefined;
@@ -117,11 +152,33 @@ function MainTabs() {
   );
 }
 
-function AuthenticatedNavigator() {
+function AuthenticatedNavigator({ navigationContainerRef }: { navigationContainerRef: any }) {
   useEffect(() => {
+    console.log('[App] Iniciando AutoSync...');
     const stopAutoSync = startAutoSync();
-    return stopAutoSync;
-  }, []);
+    console.log('[App] AutoSync iniciado');
+
+    console.log('[App] Iniciando AutoExtractQueue...');
+    const stopAutoExtract = startAutoExtractQueue();
+    console.log('[App] AutoExtractQueue iniciado');
+
+    // Listener para toque na notificação (app aberto ou em background)
+    const responseListener = Notifications.addNotificationResponseReceivedListener((response) => {
+      const data = response.notification.request.content.data;
+      if (data?.type === 'extraction_complete' && data?.reportId) {
+        navigationContainerRef.current?.navigate('Revisao', {
+          reportId: data.reportId,
+          extractionFailed: false,
+        });
+      }
+    });
+
+    return () => {
+      stopAutoSync();
+      stopAutoExtract();
+      responseListener.remove();
+    };
+  }, [navigationContainerRef]);
 
   return (
     <Stack.Navigator
@@ -159,14 +216,30 @@ function AuthenticatedNavigator() {
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const navigationContainerRef = useRef<any>(null);
+
+  const configError = supabaseConfigError || apiConfigError;
 
   useEffect(() => {
+    if (configError) {
+      return;
+    }
+    // Dispara assim que o app abre, antes mesmo de saber se ja tem sessao —
+    // o objetivo e o backend (Render) comecar a acordar do cold start o
+    // quanto antes, em paralelo com a checagem de sessao abaixo.
+    warmUpBackend();
+
     let mounted = true;
 
     supabase.auth.getSession().then(({ data }) => {
       if (mounted) {
         setSession(data.session);
         setAuthLoading(false);
+        // Sessão já salva ao abrir o app: o worker de extração offline precisa
+        // do token para avisar quando terminar com o app fechado.
+        if (data.session) {
+          registerPushToken();
+        }
       }
     }).catch(() => {
       if (mounted) {
@@ -179,6 +252,9 @@ export default function App() {
       (_event, nextSession) => {
         setSession(nextSession);
         setAuthLoading(false);
+        if (nextSession) {
+          registerPushToken();
+        }
       },
     );
 
@@ -188,13 +264,17 @@ export default function App() {
     };
   }, []);
 
+  if (configError) {
+    return <ConfigErrorScreen message={configError} />;
+  }
+
   if (authLoading) {
     return null;
   }
 
   return (
-    <NavigationContainer theme={navTheme}>
-      {session ? <AuthenticatedNavigator /> : (
+    <NavigationContainer theme={navTheme} ref={navigationContainerRef}>
+      {session ? <AuthenticatedNavigator navigationContainerRef={navigationContainerRef} /> : (
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           <Stack.Screen name="Login" component={LoginScreen} />
         </Stack.Navigator>

@@ -19,7 +19,11 @@ import { parseFieldValue } from '../utils/fieldValue';
 import { purposeIcon, purposeLabel } from '../constants/extractionPurpose';
 import { refineFields, toRefineTargetFields, RefineTargetField } from '../services/api/ai/RefineService';
 import { summarizeReport } from '../services/api/ai/SummaryService';
+<<<<<<< HEAD
 import { exportReportAsPdf } from '../services/pdf/ReportPdfService';
+=======
+import { openReportPdf } from '../services/pdf/ReportPdfService';
+>>>>>>> main
 import { colors, radius, shadows, spacing } from '../theme';
 
 function LoadingOverlay({ visible, message }: { visible: boolean; message: string }) {
@@ -104,6 +108,19 @@ export function RevisaoScreen() {
     );
   }
 
+  function handleRemoveItemField(itemIndex: number, key: string) {
+    setReport((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        items: prev.items.map((item, idx) => {
+          if (idx !== itemIndex) return item;
+          return { ...item, fields: item.fields.filter((f) => f.key !== key) };
+        }),
+      };
+    });
+  }
+
   // ─── adicionar campo manualmente ─────────────────────────────────────────
 
   function buildNewField(label: string, value: string): ReportField {
@@ -117,7 +134,7 @@ export function RevisaoScreen() {
       (report?.fields ?? []).some((f) => f.key === keyBase)
         ? `${keyBase}_${Date.now()}`
         : keyBase;
-    return {
+    const newField: ReportField = {
       form_field_id: null,
       key,
       label,
@@ -126,6 +143,7 @@ export function RevisaoScreen() {
       was_edited: true,
       dynamic_type: 'text',
     };
+    return newField;
   }
 
   /** Adiciona o campo com valor manual (sem acionar a IA). */
@@ -188,7 +206,20 @@ export function RevisaoScreen() {
     await runRefineForKey(targetField, report);
   }
 
-  async function runRefineForKey(field: ReportField, currentReport: Report) {
+  async function handleRegenerateItemField(itemIndex: number, key: string, field?: ReportField) {
+    if (!report) return;
+    if (isRefining) return;
+
+    // Se o objeto do campo foi fornecido diretamente (ex: campo recém-adicionado
+    // via "IA preencher"), usa-o sem precisar buscar no estado — evita condição
+    // de corrida onde o campo ainda não está no state quando onChange é assíncrono.
+    const targetField = field ?? report.items[itemIndex]?.fields.find((f) => f.key === key);
+    if (!targetField) return;
+
+    await runRefineForKey(targetField, report, itemIndex);
+  }
+
+  async function runRefineForKey(field: ReportField, currentReport: Report, itemIndex?: number) {
     const target: RefineTargetField = {
       key: field.key,
       label: field.label,
@@ -198,7 +229,9 @@ export function RevisaoScreen() {
       extraction_hint: field.extraction_hint ?? field.label,
     };
 
-    setRegeneratingKey(field.key);
+    // Para campos de item, usa formato "item_{idx}:{key}" para distinguir
+    // de campos de nível de relatório e de outros itens (ver DynamicFields).
+    setRegeneratingKey(itemIndex !== undefined ? `item_${itemIndex}:${field.key}` : field.key);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
 
     try {
@@ -220,6 +253,45 @@ export function RevisaoScreen() {
 
       setReport((prev) => {
         if (!prev) return prev;
+
+        // Campo de item (itemIndex fornecido)
+        if (itemIndex !== undefined) {
+          return {
+            ...prev,
+            items: prev.items.map((item, idx) => {
+              if (idx !== itemIndex) return item;
+              const exists = item.fields.some((f) => f.key === field.key);
+              if (exists) {
+                return {
+                  ...item,
+                  fields: item.fields.map((f) => {
+                    if (f.key !== field.key) return f;
+                    return {
+                      ...f,
+                      field_value: parseFieldValue(f.field_value.type, refined.value),
+                      confidence: refined.confidence,
+                      source: 'ai' as const,
+                      was_edited: false,
+                    };
+                  }),
+                };
+              }
+              // Campo novo (adicionado manualmente + IA): adiciona com valor preenchido
+              return {
+                ...item,
+                fields: [...item.fields, {
+                  ...field,
+                  field_value: parseFieldValue('text', refined.value),
+                  confidence: refined.confidence,
+                  source: 'ai' as const,
+                  was_edited: false,
+                }],
+              };
+            }),
+          };
+        }
+
+        // Campo de nível de relatório
         const exists = prev.fields.some((f) => f.key === field.key);
         if (exists) {
           return {
@@ -374,15 +446,25 @@ export function RevisaoScreen() {
     }
   }
 
+<<<<<<< HEAD
   // ─── exportar PDF ─────────────────────────────────────────────────────────
 
   /** Exporta o que está na tela agora (inclui edições ainda não salvas) —
+=======
+  // ─── visualizar PDF ───────────────────────────────────────────────────────
+
+  /** Abre o PDF do que está na tela agora (inclui edições ainda não salvas) —
+>>>>>>> main
    * não depende de salvar antes. */
   async function handleExportPdf() {
     if (!report || exportingPdf) return;
     setExportingPdf(true);
     try {
+<<<<<<< HEAD
       await exportReportAsPdf(report);
+=======
+      await openReportPdf(report);
+>>>>>>> main
     } catch (err) {
       Alert.alert(
         'Não foi possível gerar o PDF',
@@ -509,7 +591,7 @@ export function RevisaoScreen() {
                     onPress={() => void handleAddFieldAndRefine()}
                     disabled={!newFieldLabel.trim() || isRefining}
                   >
-                    {regeneratingKey === `_adding_${newFieldLabel}` ? (
+                    {isRefining ? (
                       <ActivityIndicator size="small" color={colors.primary} />
                     ) : (
                       <Ionicons name="sparkles-outline" size={15} color={colors.primary} />
@@ -522,7 +604,14 @@ export function RevisaoScreen() {
           </View>
 
           {report.items && report.items.length > 0 && (
-            <ItemsList items={report.items} onChange={handleItemsChange} />
+            <ItemsList
+              items={report.items}
+              onChange={handleItemsChange}
+              canRefine={canRefine}
+              onRemoveField={handleRemoveItemField}
+              onRegenerateField={canRefine ? handleRegenerateItemField : undefined}
+              regeneratingKey={regeneratingKey}
+            />
           )}
 
           <TouchableOpacity
@@ -537,7 +626,11 @@ export function RevisaoScreen() {
               <Ionicons name="document-outline" size={20} color={colors.primary} />
             )}
             <Text style={styles.exportButtonText}>
+<<<<<<< HEAD
               {exportingPdf ? 'Gerando PDF…' : 'Exportar PDF'}
+=======
+              {exportingPdf ? 'Gerando PDF…' : 'Visualizar PDF'}
+>>>>>>> main
             </Text>
           </TouchableOpacity>
 

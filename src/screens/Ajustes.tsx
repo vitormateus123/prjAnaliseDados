@@ -5,19 +5,31 @@ import { useFocusEffect, useNavigation, NavigationProp } from '@react-navigation
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService } from '../storage/StorageService';
 import { syncPendingReports } from '../services/sync/SyncService';
+import { processAllPendingExtractions } from '../services/extraction/AutoExtractQueueService';
 import { supabase } from '../services/auth/supabaseClient';
+import { unregisterPushToken } from '../services/api/devices/PushTokenService';
 import { RootStackParamList } from '../../App';
 import { colors, radius, shadows, spacing } from '../theme';
+import { ExtractionStatus } from '../types/reports';
 
 export default function AjustesScreen() {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const [isOnline, setIsOnline] = useState<boolean | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
+  const [extractionPendingCount, setExtractionPendingCount] = useState(0);
   const [syncing, setSyncing] = useState(false);
+  const [extracting, setExtracting] = useState(false);
 
   const refreshPending = useCallback(async () => {
     const pending = await StorageService.getPendingReports();
     setPendingCount(pending.length);
+
+    // Conta também relatórios aguardando extração
+    const allReports = await StorageService.getAllReports();
+    const pendingExtraction = allReports.filter(
+      (r) => r.extraction_status === 'pending' || r.extraction_status === 'processing'
+    ).length;
+    setExtractionPendingCount(pendingExtraction);
   }, []);
 
   useEffect(() => {
@@ -52,7 +64,32 @@ export default function AjustesScreen() {
     }
   }
 
+  async function handleRetryExtraction() {
+    setExtracting(true);
+    try {
+      const result = await processAllPendingExtractions();
+      await refreshPending();
+      if (result.failed > 0) {
+        Alert.alert(
+          'Extração parcial',
+          `${result.succeeded} relatório(s) extraído(s), ${result.failed} falharam.`,
+        );
+      } else if (result.succeeded > 0) {
+        Alert.alert('Extração concluída', `${result.succeeded} relatório(s) processado(s) com sucesso.`);
+      } else {
+        Alert.alert('Nada a processar', 'Não há relatórios aguardando extração.');
+      }
+    } finally {
+      setExtracting(false);
+    }
+  }
+
   async function handleLogout() {
+    // Desativa o token deste aparelho ANTES de derrubar a sessão: o DELETE
+    // /devices/push-token precisa do JWT. Sem isso, o aparelho continuaria
+    // recebendo notificações caso outro usuário entre depois nesta conta.
+    await unregisterPushToken();
+
     const { error } = await supabase.auth.signOut({ scope: 'local' });
     if (error) {
       Alert.alert('Não foi possível sair', 'Tente novamente.');
@@ -87,6 +124,24 @@ export default function AjustesScreen() {
           </View>
         </View>
 
+        <View style={styles.statusRow}>
+          <View style={[styles.statusCard, { flex: 1 }]}>
+            <View style={styles.statusRowInner}>
+              <Ionicons name="sparkles-outline" size={14} color={colors.infoStrong} />
+              <Text style={styles.statusLabel}>Aguardando extração</Text>
+            </View>
+            <Text style={[styles.statusValue, { color: colors.infoStrong }]}>{extractionPendingCount}</Text>
+          </View>
+
+          <View style={[styles.statusCard, { flex: 1, marginLeft: spacing.md }]}>
+            <View style={styles.statusRowInner}>
+              <Ionicons name="time-outline" size={14} color={colors.textSecondary} />
+              <Text style={styles.statusLabel}>Total local</Text>
+            </View>
+            <Text style={styles.statusValue}>0</Text>
+          </View>
+        </View>
+
         <TouchableOpacity
           style={[styles.actionCard, (syncing || pendingCount === 0 || !isOnline) && styles.actionCardDisabled]}
           onPress={handleSync}
@@ -99,6 +154,22 @@ export default function AjustesScreen() {
           <View style={{ flex: 1 }}>
             <Text style={styles.actionTitle}>{syncing ? 'Sincronizando...' : 'Sincronizar agora'}</Text>
             <Text style={styles.actionDesc}>Envia os relatórios pendentes para o servidor</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.actionCard, (extracting || extractionPendingCount === 0 || !isOnline) && styles.actionCardDisabled]}
+          onPress={handleRetryExtraction}
+          disabled={extracting || extractionPendingCount === 0 || !isOnline}
+          activeOpacity={0.85}
+        >
+          <View style={[styles.actionIconWrap, { backgroundColor: colors.infoSoft }]}>
+            <Ionicons name="sparkles" size={20} color={colors.infoStrong} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.actionTitle}>{extracting ? 'Extraindo...' : 'Tentar extração agora'}</Text>
+            <Text style={styles.actionDesc}>Processa relatórios aguardando extração por IA</Text>
           </View>
           <Ionicons name="chevron-forward" size={18} color={colors.textMuted} />
         </TouchableOpacity>

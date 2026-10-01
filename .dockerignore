@@ -1,0 +1,65 @@
+# .dockerignore
+# Ignora arquivos desnecessários no build context
+
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.coverage
+*.egg-info
+dist
+build
+
+# Virtual env
+.venv
+venv
+env
+.env
+
+# Node
+node_modules
+dist
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Testes
+tests
+*.test.py
+test_*.py
+
+# Documentação
+docs
+*.md
+README*
+
+# Logs
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Fly
+fly.toml
+
+# Backend specific
+backend/.venv
+backend/node_modules
+backend/dist
+backend/__pycache__

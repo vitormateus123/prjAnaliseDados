@@ -220,4 +220,77 @@ export const styles = StyleSheet.create({
   onlineDotOff: {
     backgroundColor: colors.danger,
   },
+  // Tooltip styles for ConfidenceBadge
+  tooltipOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
+  },
+  tooltip: {
+    backgroundColor: colors.surface,
+    borderRadius: radius.lg,
+    padding: 20,
+    width: '100%',
+    maxWidth: 320,
+    ...shadows.md,
+  },
+  tooltipHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+  },
+  tooltipTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
+  tooltipText: {
+    fontSize: 14,
+    color: colors.textSecondary,
+    marginBottom: 16,
+    lineHeight: 20,
+  },
+  tooltipRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 10,
+  },
+  dot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+  },
+  tooltipRowText: {
+    fontSize: 14,
+    color: colors.textPrimary,
+    flex: 1,
+  },
+  bold: {
+    fontWeight: '700',
+  },
+  tooltipCurrent: {
+    backgroundColor: colors.surfaceAlt,
+    borderRadius: radius.md,
+    padding: 12,
+    marginVertical: 12,
+  },
+  tooltipCurrentLabel: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginBottom: 4,
+  },
+  tooltipCurrentValue: {
+    fontSize: 13,
+    color: colors.textPrimary,
+  },
+  tooltipHint: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 12,
+    textAlign: 'center',
+  },
 });

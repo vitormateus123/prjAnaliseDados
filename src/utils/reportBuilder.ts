@@ -19,39 +19,46 @@ export function buildReportFields(
   fields: FormField[],
   extractedFields: ExtractedFieldLike[] | null,
 ): ReportField[] {
-  return fields.map((field) => {
-    const found = extractedFields?.find((ef) => ef.key === field.key);
-    if (found) {
-      return {
-        form_field_id: field.id,
-        key: field.key,
-        label: field.label,
-        field_value: parseFieldValue(field.type, found.value),
-        confidence: found.confidence,
-        source: 'ai',
-        was_edited: false,
-        input_source: found.source ?? null,
-        extraction_hint: field.extraction_hint ?? null,
-      };
-    }
-    return {
+  // Quando extractedFields é null, é preenchimento manual (offline/falha):
+  // inclui todos os campos para o usuário preencher.
+  if (extractedFields === null) {
+    return fields.map((field) => ({
       form_field_id: field.id,
       key: field.key,
       label: field.label,
       field_value: emptyFieldValue(field.type),
-      source: 'manual',
+      source: 'manual' as const,
       was_edited: false,
       extraction_hint: field.extraction_hint ?? null,
-    };
+    }));
+  }
+
+  // Com extração da IA: inclui apenas campos que a IA conseguiu preencher.
+  // Evita persistir campos vazios (ex: Código SKU) que não fazem sentido.
+  return fields.flatMap((field) => {
+    const found = extractedFields.find((ef) => ef.key === field.key);
+    if (!found) return [];
+    return [{
+      form_field_id: field.id,
+      key: field.key,
+      label: field.label,
+      field_value: parseFieldValue(field.type, found.value),
+      confidence: found.confidence,
+      source: 'ai' as const,
+      was_edited: false,
+      input_source: found.source ?? null,
+      extraction_hint: field.extraction_hint ?? null,
+    }];
   });
 }
 
-/** Item vazio pra preencher manualmente — usado quando has_items=true mas a
- * IA não identificou nenhum item, e como molde pra "+ Adicionar item". */
-export function emptyReportItem(itemFields: FormField[]): ReportItem {
+/** Item vazio para preenchimento manual — usado quando has_items=true mas a
+ * IA não identificou nenhum item. Cria item SEM campos predefinidos;
+ * o usuário adiciona campos conforme necessidade ("IA preencher" ou manual). */
+export function emptyReportItem(_itemFields: FormField[]): ReportItem {
   return {
     id: Crypto.randomUUID(),
-    fields: buildReportFields(itemFields, null),
+    fields: [],
   };
 }
 
@@ -63,6 +70,7 @@ export function buildReportItems(
   if (extractedItems.length === 0) return [emptyReportItem(itemFields)];
   return extractedItems.map((it) => ({
     id: Crypto.randomUUID(),
+    // Só inclui campos que a IA realmente preencheu para este item
     fields: buildReportFields(itemFields, it.fields),
   }));
 }

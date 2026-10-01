@@ -14,6 +14,7 @@ import {
   ScrollView,
   Image,
   Modal,
+  Platform,
 } from 'react-native';
 import { useNavigation, useRoute, NavigationProp, RouteProp } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
@@ -21,8 +22,10 @@ import NetInfo from '@react-native-community/netinfo';
 import * as Crypto from 'expo-crypto';
 import * as Haptics from 'expo-haptics';
 import { Ionicons } from '@expo/vector-icons';
+import { useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import { RootStackParamList } from '../../App';
 import { KeyboardAvoidingScreen } from '../components/KeyboardAvoidingScreen';
+import { formatTime, AudioProgressBar } from '../components/AudioProgressBar';
 import { extractFields } from '../services/api/ai/ExtractionService';
 import { autoExtractCombined, StagedPhoto } from '../services/api/ai/AutoExtractionService';
 import { summarizeReport } from '../services/api/ai/SummaryService';
@@ -31,7 +34,7 @@ import { useAudioCapture } from '../services/api/speech/AudioRecordingService';
 import { StorageService } from '../storage/StorageService';
 import { fetchFormTemplateById } from '../services/api/forms/TemplatesService';
 import { FormTemplate } from '../types/forms';
-import { AutoExtractionResult, Capture, ExtractionPurpose, Report, ReportField, ReportItem } from '../types/reports';
+import { AutoExtractionResult, Capture, ExtractionPurpose, ExtractionStatus, Report, ReportField, ReportItem } from '../types/reports';
 import {
   buildDynamicReportFields,
   buildDynamicReportItems,
@@ -42,6 +45,47 @@ import {
 import { PURPOSE_OPTIONS } from '../constants/extractionPurpose';
 import { styles as shared } from '../styles';
 import { colors, radius, shadows, spacing } from '../theme';
+
+// Player interativo do áudio anexado, ainda na tela de Captura — permite
+// ouvir a gravação antes de enviar pra análise (mesmo padrão de barra de
+// progresso do CaptureOriginCard, ver AudioProgressBar).
+function StagedAudioPlayer({ uri }: { uri: string }) {
+  const player = useAudioPlayer({ uri });
+  const status = useAudioPlayerStatus(player);
+
+  const isPlaying = status.playing;
+  const currentTime = status.currentTime ?? 0;
+  const duration = status.duration ?? 0;
+
+  return (
+    <View style={local.stagedAudioPlayerRow}>
+      <TouchableOpacity
+        style={local.stagedAudioButton}
+        activeOpacity={0.85}
+        onPress={() => (isPlaying ? player.pause() : player.play())}
+      >
+        <Ionicons
+          name={isPlaying ? 'pause' : 'play'}
+          size={16}
+          color={colors.textOnPrimary}
+        />
+      </TouchableOpacity>
+
+      <View style={local.stagedAudioBody}>
+        <AudioProgressBar
+          currentTime={currentTime}
+          duration={duration}
+          onSeek={(seconds) => player.seekTo(seconds)}
+        />
+
+        <View style={local.stagedAudioTimeRow}>
+          <Text style={local.stagedAudioTime}>{formatTime(currentTime)}</Text>
+          <Text style={local.stagedAudioTime}>{formatTime(duration)}</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
 
 // A entrada principal é sempre livre: foto(s), áudio e texto podem ser
 // combinados e a IA decide internamente como estruturar a informação.
@@ -69,6 +113,11 @@ export default function CapturaScreen() {
     mimeType: string;
   } | null>(null);
 
+  // Transcrição provisória do áudio staged — preenchida pelo backend após
+  // /extract/auto e exibida no chip "Gravação anexada" como prévia antes
+  // de navegar para a Revisão.
+  const [stagedTranscript, setStagedTranscript] = useState<string | null>(null);
+
   const [stagedText, setStagedText] = useState('');
   const [purpose, setPurpose] = useState<ExtractionPurpose | null>(null);
   const [customInstruction, setCustomInstruction] = useState('');
@@ -80,11 +129,6 @@ export default function CapturaScreen() {
     stagedPhotos.length > 0 ||
     !!stagedAudio ||
     stagedText.trim().length > 0;
-
-  // No modo automático, a captura acontece em duas etapas visuais:
-  // 1) adicionar a fonte; 2) definir a finalidade e enviar para análise.
-  // A finalidade só aparece depois que existe alguma fonte anexada.
-  const captureStep = hasStaged ? 2 : 1;
 
   // Acorda o backend assim que a tela abre — se o plano gratuito do Render
   // estiver "dormindo", o cold start (30-50s) acontece enquanto a pessoa
@@ -99,38 +143,10 @@ export default function CapturaScreen() {
   function clearStaged() {
     setStagedPhotos([]);
     setStagedAudio(null);
+    setStagedTranscript(null);
     setStagedText('');
     setPurpose(null);
     setCustomInstruction('');
-  }
-
-  async function persistUnstructuredReport(captures: Capture[]) {
-    const now = new Date().toISOString();
-
-    const report: Report = {
-      id: Crypto.randomUUID(),
-      context_label: 'Informação recebida',
-      extraction_purpose: purpose,
-      extraction_custom_instruction:
-        purpose === 'OTHER'
-          ? customInstruction.trim() || null
-          : null,
-      status: 'draft',
-      fields: [],
-      items: [],
-      captures,
-      created_at: now,
-      updated_at: now,
-    };
-
-    await StorageService.upsertReport(report);
-
-    clearStaged();
-
-    navigation.navigate('Revisao', {
-      reportId: report.id,
-      extractionFailed: true,
-    });
   }
 
   // Relatório sem template (structure_mode='dynamic') — a IA já devolveu os
@@ -154,6 +170,9 @@ export default function CapturaScreen() {
           ? customInstruction.trim() || null
           : null,
       status: 'draft',
+      extraction_status: 'done',
+      extraction_attempts: 0,
+      extraction_last_error: null,
       fields: flatFields,
       items,
       captures,
@@ -260,6 +279,9 @@ export default function CapturaScreen() {
           : null,
 
       status: 'draft',
+      extraction_status: extractionFailed ? 'failed' : 'done',
+      extraction_attempts: extractionFailed ? 1 : 0,
+      extraction_last_error: extractionFailed ? 'Falha na extração inicial' : null,
       fields: flatFields,
       items,
       captures,
@@ -277,6 +299,73 @@ export default function CapturaScreen() {
       reportId: report.id,
       extractionFailed,
     });
+  }
+
+  // Salva relatório com extraction_status: 'pending' para extração assíncrona posterior.
+  // Mostra Alert com opções "Preencher agora" (vai pra Revisão) / "Deixar para depois" (volta pro Histórico).
+  async function persistPendingExtraction(
+    captures: Capture[],
+    options: {
+      formTemplateId?: string | null;
+      formTemplateName?: string | null;
+      contextLabel?: string;
+      contextType?: string | null;
+      extractionPurpose?: ExtractionPurpose | null;
+      extractionCustomInstruction?: string | null;
+    } = {},
+  ) {
+    const now = new Date().toISOString();
+
+    const report: Report = {
+      id: Crypto.randomUUID(),
+      form_template_id: options.formTemplateId ?? null,
+      form_template_name: options.formTemplateName ?? null,
+      context_label: options.contextLabel ?? null,
+      context_type: options.contextType ?? null,
+      extraction_purpose: options.extractionPurpose ?? null,
+      extraction_custom_instruction: options.extractionCustomInstruction ?? null,
+      status: 'draft',
+      extraction_status: 'pending',
+      extraction_attempts: 0,
+      extraction_last_error: null,
+      fields: [],
+      items: [],
+      captures,
+      created_at: now,
+      updated_at: now,
+    };
+
+    await StorageService.upsertReport(report);
+    clearStaged();
+
+    // Oferece escolha ao usuário
+    const choice = await new Promise<'fill' | 'later'>((resolve) => {
+      Alert.alert(
+        'Sem conexão',
+        'A extração por IA precisa de internet. Sua captura foi salva no aparelho e será processada automaticamente assim que a conexão voltar; você recebe um aviso quando terminar. Se preferir, pode preencher os campos manualmente agora.',
+        [
+          {
+            text: 'Deixar para depois',
+            onPress: () => resolve('later'),
+          },
+          {
+            text: 'Preencher agora',
+            onPress: () => resolve('fill'),
+          },
+        ],
+        { cancelable: false },
+      );
+    });
+
+    if (choice === 'fill') {
+      navigation.navigate('Revisao', {
+        reportId: report.id,
+        extractionFailed: true,
+      });
+    } else {
+      // Volta para o Histórico (a navegação já está no stack, só fechar Captura)
+      navigation.goBack();
+    }
   }
 
   // ─── modo manual: template já escolhido em FormSelectScreen ────────────
@@ -298,23 +387,18 @@ export default function CapturaScreen() {
     const netState = await NetInfo.fetch();
 
     if (!netState.isConnected) {
-      Alert.alert(
-        'Sem conexão',
-        'Você está offline — a extração por IA não está disponível. Preencha manualmente.',
-      );
-
-      const items = activeTemplate.has_items
-        ? [emptyReportItem(itemTemplateFields)]
-        : [];
-
-      await persistReport(
-        activeTemplate,
+      await persistPendingExtraction(
         [capture],
-        buildReportFields(flatTemplateFields, null),
-        items,
-        true,
+        {
+          formTemplateId: activeTemplate.id,
+          formTemplateName: activeTemplate.name,
+          extractionPurpose: isAutoMode ? purpose : null,
+          extractionCustomInstruction:
+            isAutoMode && purpose === 'OTHER'
+              ? customInstruction.trim() || null
+              : null,
+        },
       );
-
       return;
     }
 
@@ -448,9 +532,7 @@ export default function CapturaScreen() {
         {
           text: 'Revisar manualmente',
           onPress: () => {
-            void persistUnstructuredReport(
-              captures,
-            );
+            void persistPendingExtraction(captures);
           },
         },
         {
@@ -512,11 +594,6 @@ export default function CapturaScreen() {
 
         return;
       }
-
-      Alert.alert(
-        'Informação organizada',
-        'Organizamos esta informação sem um formulário fixo. Confira os dados antes de salvar.',
-      );
 
       await persistDynamicReport(
         captures,
@@ -662,21 +739,18 @@ export default function CapturaScreen() {
       await NetInfo.fetch();
 
     if (!netState.isConnected) {
-      Alert.alert(
-        'Sem conexão',
-        'Sua informação será salva no dispositivo. Você poderá preenchê-la agora e ela será sincronizada quando houver conexão.',
-        [
-          {
-            text: 'Continuar',
-            onPress: () => {
-              void persistUnstructuredReport(
-                captures,
-              );
-            },
-          },
-        ],
+      await persistPendingExtraction(
+        captures,
+        {
+          contextLabel: 'Informação recebida',
+          contextType: null,
+          extractionPurpose: purpose,
+          extractionCustomInstruction:
+            purpose === 'OTHER'
+              ? customInstruction.trim() || null
+              : null,
+        },
       );
-
       return;
     }
 
@@ -699,8 +773,30 @@ export default function CapturaScreen() {
               : null,
         });
 
+      // Armazena a transcrição provisoriamente para exibição no chip de
+      // "Gravação anexada" enquanto a navegação não acontece.
+      if (auto.transcript) {
+        setStagedTranscript(auto.transcript);
+      }
+
+      // Enriquece a capture de voz com a transcrição devolvida pelo backend
+      // (gerada pelo Groq durante /extract/auto) para que apareça no player
+      // dentro do CaptureOriginCard (Revisão e Histórico).
+      //
+      // Grava tanto em `transcript` (exibição imediata, antes de qualquer
+      // sync) quanto em `text_content` — o backend só conhece text_content
+      // no schema de captures (ver reports.py), então é esse campo que de
+      // fato sobrevive ao POST /reports/ e volta ao reabrir o relatório
+      // depois de sincronizado (Histórico, outro aparelho etc.).
+      const capturesWithTranscript: Capture[] = captures.map((c) => {
+        if (c.type === 'voice' && auto.transcript) {
+          return { ...c, transcript: auto.transcript, text_content: auto.transcript };
+        }
+        return c;
+      });
+
       await finishAutoCapture(
-        captures,
+        capturesWithTranscript,
         auto,
         () =>
           submitStagedCapture(),
@@ -980,9 +1076,7 @@ export default function CapturaScreen() {
               style={shared.subtitle}
             >
               {isAutoMode
-                ? captureStep === 1
-                  ? 'Adicione uma foto, voz ou texto para começar.'
-                  : 'Agora defina a finalidade e envie a informação para análise.'
+                ? 'Junte foto, voz e/ou texto sobre a mesma informação — a IA organiza tudo'
                 : 'Grave por voz ou tire uma foto para começar'}
             </Text>
           </View>
@@ -1006,20 +1100,18 @@ export default function CapturaScreen() {
           {isAutoMode &&
             hasStaged &&
             !textMode && (
-              <>
-                <View style={local.stepHeader}>
-                  <View style={local.stepNumberActive}>
-                    <Text style={local.stepNumberTextActive}>1</Text>
-                  </View>
-                  <View style={local.stepHeaderText}>
-                    <Text style={local.stepTitle}>Fonte adicionada</Text>
-                    <Text style={local.stepSubtitle}>Confira o conteúdo antes de continuar.</Text>
-                  </View>
-                  <Ionicons name="checkmark-circle" size={20} color={colors.primary} />
-                </View>
-
-                <View style={local.stagedSection}>
-                  <Text style={local.stagedLabel}>Conteúdo da captura</Text>
+              <View
+                style={
+                  local.stagedSection
+                }
+              >
+                <Text
+                  style={
+                    local.stagedLabel
+                  }
+                >
+                  Anexado nesta captura
+                </Text>
 
                 {stagedPhotos.length >
                   0 && (
@@ -1078,46 +1170,70 @@ export default function CapturaScreen() {
                 )}
 
                 {stagedAudio && (
-                  <View
-                    style={
-                      local.stagedChip
-                    }
-                  >
-                    <Ionicons
-                      name="mic"
-                      size={14}
-                      color={
-                        colors.primary
-                      }
-                    />
-
-                    <Text
+                  <View style={local.stagedAudioBlock}>
+                    {/* chip de gravação + botão de remover */}
+                    <View
                       style={
-                        local.stagedChipText
+                        local.stagedChip
                       }
-                    >
-                      Gravação anexada
-                    </Text>
-
-                    <TouchableOpacity
-                      onPress={() =>
-                        setStagedAudio(
-                          null,
-                        )
-                      }
-                      disabled={
-                        isProcessing
-                      }
-                      hitSlop={8}
                     >
                       <Ionicons
-                        name="close-circle"
-                        size={16}
+                        name="mic"
+                        size={14}
                         color={
-                          colors.textMuted
+                          colors.primary
                         }
                       />
-                    </TouchableOpacity>
+
+                      <Text
+                        style={
+                          local.stagedChipText
+                        }
+                      >
+                        Gravação anexada
+                      </Text>
+
+                      <TouchableOpacity
+                        onPress={() => {
+                          setStagedAudio(null);
+                          setStagedTranscript(null);
+                        }}
+                        disabled={
+                          isProcessing
+                        }
+                        hitSlop={8}
+                      >
+                        <Ionicons
+                          name="close-circle"
+                          size={16}
+                          color={
+                            colors.textMuted
+                          }
+                        />
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* barra de progresso interativa, para ouvir antes de enviar */}
+                    <StagedAudioPlayer uri={stagedAudio.uri} />
+
+                    {/* prévia da transcrição (disponível após envio) */}
+                    {!!stagedTranscript && (
+                      <View style={local.stagedTranscriptBox}>
+                        <View style={local.stagedTranscriptHeader}>
+                          <Ionicons
+                            name="document-text-outline"
+                            size={11}
+                            color={colors.textMuted}
+                          />
+                          <Text style={local.stagedTranscriptLabel}>
+                            Transcrição
+                          </Text>
+                        </View>
+                        <Text style={local.stagedTranscriptText} numberOfLines={4}>
+                          {stagedTranscript}
+                        </Text>
+                      </View>
+                    )}
                   </View>
                 )}
 
@@ -1165,22 +1281,13 @@ export default function CapturaScreen() {
                   </View>
                 )}
 
-                </View>
-
-                <View style={local.stepHeader}>
-                  <View style={local.stepNumberActive}>
-                    <Text style={local.stepNumberTextActive}>2</Text>
-                  </View>
-                  <View style={local.stepHeaderText}>
-                    <Text style={local.stepTitle}>Defina a finalidade</Text>
-                    <Text style={local.stepSubtitle}>Diga à IA o que você quer obter dessa informação.</Text>
-                  </View>
-                </View>
-
-                <View style={local.purposeSection}>
-                  <Text style={local.purposeLabel}>
-                    Qual é a finalidade? (opcional)
-                  </Text>
+                <Text
+                  style={
+                    local.purposeLabel
+                  }
+                >
+                  Qual é a finalidade? (opcional)
+                </Text>
 
                 <View
                   style={
@@ -1314,24 +1421,10 @@ export default function CapturaScreen() {
                     </>
                   )}
                 </TouchableOpacity>
-                </View>
-              </>
+              </View>
             )}
 
           {!textMode && (
-            <>
-              {isAutoMode && !hasStaged && (
-                <View style={local.stepHeader}>
-                  <View style={local.stepNumberActive}>
-                    <Text style={local.stepNumberTextActive}>1</Text>
-                  </View>
-                  <View style={local.stepHeaderText}>
-                    <Text style={local.stepTitle}>Adicione uma fonte</Text>
-                    <Text style={local.stepSubtitle}>Use foto, voz ou texto para começar.</Text>
-                  </View>
-                </View>
-              )}
-
             <View
               style={
                 local.actionsRow
@@ -1521,7 +1614,6 @@ export default function CapturaScreen() {
                 </Text>
               </TouchableOpacity>
             </View>
-            </>
           )}
 
           {textMode && (
@@ -1889,55 +1981,6 @@ const local = StyleSheet.create({
     marginBottom: 6,
   },
 
-  stepHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    marginBottom: spacing.md,
-  },
-
-  stepNumberActive: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    backgroundColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  stepNumberTextActive: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.textOnPrimary,
-  },
-
-  stepHeaderText: {
-    flex: 1,
-  },
-
-  stepTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: colors.textPrimary,
-  },
-
-  stepSubtitle: {
-    fontSize: 12,
-    lineHeight: 17,
-    color: colors.textSecondary,
-    marginTop: 2,
-  },
-
-  purposeSection: {
-    backgroundColor: colors.surface,
-    borderRadius: radius.lg,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.lg,
-    marginBottom: spacing.xl,
-    ...shadows.sm,
-  },
-
   actionsRow: {
     flexDirection: 'row',
     gap: spacing.md,
@@ -2103,6 +2146,42 @@ const local = StyleSheet.create({
     backgroundColor: colors.border,
   },
 
+  stagedAudioBlock: {
+    gap: spacing.xs,
+  },
+
+  stagedAudioPlayerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingHorizontal: 2,
+  },
+
+  stagedAudioButton: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+
+  stagedAudioBody: {
+    flex: 1,
+    gap: 2,
+  },
+
+  stagedAudioTimeRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+
+  stagedAudioTime: {
+    fontSize: 11,
+    color: colors.textSecondary,
+  },
+
   stagedRemoveBadge: {
     position: 'absolute',
     top: -6,
@@ -2134,6 +2213,33 @@ const local = StyleSheet.create({
     fontWeight: '600',
     color: colors.textPrimary,
     flexShrink: 1,
+  },
+
+  stagedTranscriptBox: {
+    marginTop: spacing.xs,
+    padding: spacing.sm,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceAlt,
+    maxWidth: '100%',
+  },
+
+  stagedTranscriptHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginBottom: 3,
+  },
+
+  stagedTranscriptLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.textMuted,
+  },
+
+  stagedTranscriptText: {
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.textSecondary,
   },
 
   purposeLabel: {

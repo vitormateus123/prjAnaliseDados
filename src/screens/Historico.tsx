@@ -6,9 +6,13 @@ import {
 import { useNavigation, useFocusEffect, NavigationProp } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 import { StorageService } from '../storage/StorageService';
-import { fetchRemoteReports } from '../services/api/reports/ReportsService';
+import { fetchRemoteReports, deleteRemoteReport } from '../services/api/reports/ReportsService';
 import { syncReport } from '../services/sync/SyncService';
+<<<<<<< HEAD
 import { exportReportAsPdf } from '../services/pdf/ReportPdfService';
+=======
+import { openReportPdf } from '../services/pdf/ReportPdfService';
+>>>>>>> main
 import { NetworkError, ApiError } from '../services/api/apiClient';
 import { Report, ReportField, FieldValue } from '../types/reports';
 import { purposeLabel } from '../constants/extractionPurpose';
@@ -27,6 +31,23 @@ const STATUS_STYLE: Record<Report['status'], { bg: string; text: string; icon: k
   pending_sync: { bg: colors.warningSoft, text: colors.warningStrong, icon: 'time-outline' },
   synced: { bg: colors.successSoft, text: colors.successStrong, icon: 'checkmark-circle' },
   error: { bg: colors.dangerSoft, text: colors.dangerStrong, icon: 'alert-circle' },
+};
+
+// Status de extração (independente do sync) — design simplificado
+const EXTRACTION_STATUS_LABEL: Record<Report['extraction_status'], string> = {
+  not_applicable: '',
+  pending: 'Aguardando extração',
+  processing: 'Extraindo...',
+  done: 'Extração concluída',
+  failed: 'Falha na extração',
+};
+
+const EXTRACTION_STATUS_STYLE: Record<Report['extraction_status'], { color: string; icon: keyof typeof Ionicons.glyphMap }> = {
+  not_applicable: { color: colors.textMuted, icon: 'help-circle-outline' },
+  pending: { color: colors.infoStrong, icon: 'time-outline' },
+  processing: { color: colors.primary, icon: 'sync' },
+  done: { color: colors.successStrong, icon: 'checkmark-circle' },
+  failed: { color: colors.dangerStrong, icon: 'alert-circle' },
 };
 
 type StatusFilter = 'all' | Report['status'];
@@ -297,7 +318,11 @@ export default function HistoricoScreen() {
     if (exportingId) return;
     setExportingId(report.id);
     try {
+<<<<<<< HEAD
       await exportReportAsPdf(report);
+=======
+      await openReportPdf(report);
+>>>>>>> main
     } catch (err) {
       Alert.alert(
         'Não foi possível gerar o PDF',
@@ -309,8 +334,40 @@ export default function HistoricoScreen() {
   }
 
   async function handleDeleteReport(report: Report) {
-    await StorageService.deleteReport(report.id);
-    refreshList();
+    Alert.alert(
+      'Excluir relatório',
+      'Essa ação não pode ser desfeita.',
+      [
+        { text: 'Cancelar', style: 'cancel' },
+        {
+          text: 'Excluir',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // 'draft' nunca foi sincronizado — não existe cópia remota pra apagar.
+              if (report.status !== 'draft') {
+                await deleteRemoteReport(report.id);
+              }
+            } catch (err) {
+              if (err instanceof NetworkError) {
+                // Sem conexão: apaga local mesmo assim, mas avisa — se o
+                // relatório já estava sincronizado, ele volta a aparecer no
+                // próximo refresh online até ser excluído de novo com internet.
+                Alert.alert(
+                  'Sem conexão',
+                  'O relatório foi removido deste aparelho, mas ainda existe no servidor. Exclua de novo quando estiver online.',
+                );
+              } else if (!(err instanceof ApiError && err.status === 404)) {
+                Alert.alert('Não foi possível excluir', describeRemoteError(err));
+                return;
+              }
+            }
+            await StorageService.deleteReport(report.id);
+            refreshList();
+          },
+        },
+      ],
+    );
   }
 
   if (loading) {
@@ -515,6 +572,20 @@ export default function HistoricoScreen() {
                   {item.captures.length > 1 ? ` · ${item.captures.length} capturas combinadas` : ''}
                   {purposeLabel(item.extraction_purpose) ? ` · ${purposeLabel(item.extraction_purpose)}` : ''}
                 </Text>
+
+                {/* Indicador de status de extração — discreto, na linha de metadados */}
+                {item.extraction_status && item.extraction_status !== 'not_applicable' && (
+                  <View style={local.extractionIndicator}>
+                    <Ionicons
+                      name={EXTRACTION_STATUS_STYLE[item.extraction_status].icon}
+                      size={11}
+                      color={EXTRACTION_STATUS_STYLE[item.extraction_status].color}
+                    />
+                    <Text style={[local.extractionText, { color: EXTRACTION_STATUS_STYLE[item.extraction_status].color }]}>
+                      {EXTRACTION_STATUS_LABEL[item.extraction_status]}
+                    </Text>
+                  </View>
+                )}
               </View>
 
               {item.status === 'error' && item.sync_error && (
@@ -677,13 +748,16 @@ const local = StyleSheet.create({
   // Linha de metadados (data, nº de capturas, finalidade) — deliberadamente
   // menor e mais apagada que o resumo acima: é contexto de apoio, não o que
   // diferencia um card do outro, então não deve competir por atenção.
-  cardMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: spacing.sm },
+  cardMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: spacing.sm, flexWrap: 'wrap' },
   cardDate: { fontSize: 11, color: colors.textMuted, fontWeight: '500' },
   statusPill: {
     flexDirection: 'row', alignItems: 'center', borderRadius: radius.pill,
     paddingHorizontal: 10, paddingVertical: 5, gap: 4, flexShrink: 0,
   },
   statusText: { fontSize: 11, fontWeight: '700' },
+  // Indicador de extração — discreto, sem background, na linha de metadados
+  extractionIndicator: { flexDirection: 'row', alignItems: 'center', gap: 3, marginLeft: 4 },
+  extractionText: { fontSize: 10, fontWeight: '600' },
   syncError: { fontSize: 12, color: colors.dangerStrong, marginTop: spacing.sm },
   cardActions: {
     flexDirection: 'row', flexWrap: 'wrap', rowGap: spacing.sm, marginTop: spacing.md, paddingTop: spacing.md,

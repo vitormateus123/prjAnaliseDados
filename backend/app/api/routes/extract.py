@@ -287,14 +287,14 @@ async def extract_auto(payload: AutoExtractRequest):
                 return _auto_error("Uma das fotos é grande demais (máx. 10 MB).", retryable=False)
             photos_bytes.append((data, p.mime_type))
 
-        transcript = None
+        transcript: str | None = None
         if payload.audio:
             audio_bytes = base64.b64decode(payload.audio.data)
             if len(audio_bytes) > MAX_AUTO_FILE_SIZE:
                 return _auto_error("O áudio é grande demais (máx. 10 MB).", retryable=False)
             transcript = await groq_service.transcribe_audio(audio_bytes, payload.audio.mime_type)
             t1 = time.monotonic()
-            print(f"[extract/auto] Groq STT: {t1 - t0:.1f}s", flush=True)
+            print(f"[extract/auto] Groq STT: {t1 - t0:.1f}s transcript={repr(transcript[:80]) if transcript else None}", flush=True)
 
         typed_text = (payload.text or "").strip() or None
         if transcript and typed_text:
@@ -330,7 +330,6 @@ async def extract_auto(payload: AutoExtractRequest):
                 )
             else:
                 new_field_keys = []
-
             template_row_resp = (
                 get_client().table("form_templates")
                 .select("name,has_items")
@@ -361,6 +360,7 @@ async def extract_auto(payload: AutoExtractRequest):
                 provider="gemini",
                 model=_AUTO_MODEL,
                 new_field_keys=new_field_keys,
+                transcript=transcript,
             )
 
         # ─── match="dynamic" (ou fallback se a IA não indicou template_id
@@ -382,10 +382,12 @@ async def extract_auto(payload: AutoExtractRequest):
             dynamic_items=dynamic_items,
             provider="gemini",
             model=_AUTO_MODEL,
+            transcript=transcript,
         )
     except Exception as e:
         logger.exception("Falha ao processar classificacao/estruturacao no modo automatico")
         return _auto_error(f"Erro ao interpretar resposta da IA: {e}")
+
 
 # ─── ENDPOINT DE REFINAMENTO ─────────────────────────────────────────────────
 # Recebe as capturas ORIGINAIS (base64 local OU file_url remota) e a lista de
@@ -520,3 +522,28 @@ async def summarize_report(payload: SummarizeRequest):
     except Exception as e:
         logger.exception("Falha ao gerar resumo do relatório")
         return SummarizeResponse(success=False, error=str(e))
+
+
+# ─── ENDPOINT INTERNO PARA WORKER DE EXTRAÇÃO (APScheduler / Render Cron) ────
+# Protegido por header secreto — configure EXTRACTION_WORKER_SECRET no .env
+# e configure o Render Cron Job para bater aqui a cada 5 min.
+from app.services.extraction_worker import process_pending_extractions
+from app.core.config import settings
+
+@router.post("/worker/process-pending", tags=["worker"])
+async def extraction_worker_endpoint(x_worker_secret: str | None = None):
+    """
+    Endpoint para job periódico (Render Cron Job) processar extrações pendentes.
+    Protegido por header `X-Worker-Secret` igual a `EXTRACTION_WORKER_SECRET`.
+    """
+    if x_worker_secret != settings.extraction_worker_secret:
+        logger.warning("Worker endpoint: secret inválido")
+        raise HTTPException(status_code=403, detail="Acesso não autorizado")
+
+    try:
+        results = await process_pending_extractions()
+        logger.info("Worker processamento: %s", results)
+        return {"success": True, **results}
+    except Exception as e:
+        logger.exception("Falha no worker endpoint")
+        raise HTTPException(status_code=500, detail=str(e))
